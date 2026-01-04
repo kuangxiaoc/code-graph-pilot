@@ -1,38 +1,39 @@
 import os
+import operator
+from typing import TypedDict, Annotated, List, Union
 from dotenv import load_dotenv
+
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from neo4j import GraphDatabase
 from langgraph.graph import StateGraph, END
-from typing import TypedDict
 
+# 加载环境变量
 load_dotenv()
 
-# --- 1. 初始化 Qwen 模型 ---
-# 确保你的 .env 文件里有 QWEN_API_KEY 和 QWEN_BASE_URL
+# --- 1. 配置 Qwen 模型 ---
 llm = ChatOpenAI(
-    model='qwen-plus', # 或者 'qwen-2.5-coder-32b-instruct'
+    model='qwen-plus',
     openai_api_key=os.getenv("QWEN_API_KEY"),
     openai_api_base=os.getenv("QWEN_BASE_URL"),
-    temperature=0.1
+    temperature=0.1,
+    streaming=True
 )
 
-# --- 2. Neo4j 查询工具 (核心修复部分) ---
-def query_dependencies(func_name: str):
+# --- 2. Neo4j 图检索工具 (GraphRAG 核心) ---
+def query_dependencies(func_name: str) -> str:
+    """
+    在 Neo4j 中执行双向查询
+    """
     uri = os.getenv("NEO4J_URI")
     auth = (os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))
     
-    # 双向查询：查下游(我调了谁) + 上游(谁调了我)
     query = """
     MATCH (target:Function {name: $name})
-    
-    // 1. 下游依赖 (Outbound): 我调用了谁
     OPTIONAL MATCH (target)-[:CALLS]->(downstream)
-    
-    // 2. 上游影响 (Inbound): 谁调用了我
     OPTIONAL MATCH (upstream)-[:CALLS]->(target)
-    
     RETURN 
-        target.filepath as filepath, 
+        target.filepath as filepath,
         target.lineno as lineno,
         collect(DISTINCT downstream.name) as calls,
         collect(DISTINCT upstream.name) as called_by
@@ -40,92 +41,145 @@ def query_dependencies(func_name: str):
     
     try:
         with GraphDatabase.driver(uri, auth=auth) as driver:
-            # 执行查询
             result = driver.execute_query(query, name=func_name).records
             
-            # 如果没查到
             if not result:
-                return f"Function '{func_name}' not found in Knowledge Graph. Please check the function name."
+                return f"⚠️ 警告：在知识图谱中未找到函数 '{func_name}'。请检查函数名是否正确。"
             
-            # 获取第一条记录
             record = result[0]
             
-            # 格式化返回结果给 LLM
-            return f"""
-            [Target Function]: {func_name}
-            [Location]: {record['filepath']} (Line: {record.get('lineno', 'N/A')})
+            # 这里保留英文 Key 是为了让 LLM 更准确地理解结构，但我们在 Prompt 里会要求它用中文解释
+            context_str = f"""
+            [目标实体]: {func_name}
+            [位置]: {record['filepath']} (行号: {record.get('lineno', '未知')})
             
-            [Dependency Graph Analysis]
-            1. Outbound Calls (Dependencies):
-               {record['calls']}
-               -> Modifying '{func_name}' might change the behavior passed to these functions.
+            [图谱依赖分析]
+            1. 下游依赖 (它调用了谁 / Outbound):
+               {record['calls'] if record['calls'] else "无 (None)"}
+               -> 修改 {func_name} 可能会改变传给这些函数的参数。
                
-            2. Inbound Calls (Called By):
-               {record['called_by']}
-               -> WARNING: Modifying '{func_name}' will directly affect these upstream functions.
+            2. 上游影响 (谁调用了它 / Inbound):
+               {record['called_by'] if record['called_by'] else "无 (None - 可能是入口函数或未被使用)"}
+               -> 严重警告: 修改 {func_name} 将直接导致这些调用者出错。
             """
+            return context_str
             
     except Exception as e:
-        return f"Database Error: {str(e)}"
+        return f"数据库连接错误: {str(e)}"
 
-# --- 3. LangGraph 状态与节点定义 ---
-
+# --- 3. 定义 Agent 状态 ---
 class AgentState(TypedDict):
     query: str
     target_func: str
     context: str
     response: str
+    revision_count: int
+    feedback: str
+
+# --- 4. 节点函数定义 ---
 
 def parse_intent(state: AgentState):
-    # 简单的提取逻辑：取最后一个单词作为函数名
-    # 实际项目中可以使用 LLM 进行提取
+    """节点 1: 意图识别"""
+    print("--- [Step 1] 解析意图 ---")
     txt = state['query']
-    # 移除常见标点
-    for char in ".,?!'\"":
-        txt = txt.replace(char, "")
-    
-    words = txt.split()
+    clean_txt = txt.strip().rstrip("?.!")
+    words = clean_txt.split()
     target = words[-1] if words else ""
-    return {"target_func": target}
+    # 如果用户输入包含中文标点，可能需要额外处理，这里简单处理
+    target = target.replace("。", "").replace("？", "")
+    return {"target_func": target, "revision_count": 0}
 
 def retrieve_graph(state: AgentState):
-    # 调用上面的 Neo4j 查询函数
+    """节点 2: 图谱检索"""
+    print(f"--- [Step 2] 检索图谱: {state['target_func']} ---")
     context = query_dependencies(state['target_func'])
     return {"context": context}
 
 def generate_answer(state: AgentState):
+    """节点 3: 生成回答 (中文版)"""
+    print("--- [Step 3] 生成回答 ---")
+    
+    # 🔥🔥🔥 核心修改：将 Prompt 改为中文 🔥🔥🔥
     prompt = f"""
-    你是一位高级Python架构师和代码重构助手, 并用中文回答。
+    你是一位资深的 Python 架构师和代码重构专家。
     
-    User Query: "{state['query']}"
+    用户问题: "{state['query']}"
     
-    === Knowledge Graph Context ===
+    === 代码知识图谱上下文 ===
     {state['context']}
     ===============================
     
-    Task: 
-    1. Analyze the impact of modifying the function '{state['target_func']}'.
-    2. Specifically mention which functions will be broken (upstream callers).
-    3. Provide a brief refactoring risk assessment (Low/Medium/High).
+    之前的审查反馈 (如果有): {state.get('feedback', '无')}
+    
+    任务:
+    请基于图谱上下文，分析修改函数 '{state['target_func']}' 带来的影响。
+    
+    要求:
+    1. **必须使用中文回答**。
+    2. 明确指出风险等级 (低/中/高)。
+    3. 分别说明对“下游依赖”和“上游调用者”的影响。
+    4. 如果上下文中显示“无”，请明确说明该函数可能是一个孤立函数或入口点。
+    5. 保持专业、条理清晰，使用 Markdown 格式。
     """
     
-    # 调用 Qwen
-    msg = llm.invoke(prompt)
-    return {"response": msg.content}
+    response = llm.invoke(prompt)
+    return {"response": response.content}
 
-# --- 4. 构建工作流图 ---
+def review_answer(state: AgentState):
+    """节点 4: 结果审查 (中文版)"""
+    print("--- [Step 4] 审查回答 ---")
+    
+    prompt = f"""
+    你是一个代码助手 QA 审查员。
+    
+    图谱上下文: {state['context']}
+    生成的回答: {state['response']}
+    
+    请检查:
+    1. 回答是否遗漏了上下文中的关键影响（特别是“上游影响/Called By”）？
+    2. 回答是否产生了幻觉（编造了不存在的依赖）？
+    3. **回答是否使用了中文？**
+    
+    如果一切正常，仅输出 "PASS"。
+    如果有问题，输出 "FAIL: <具体原因>"。
+    """
+    
+    review = llm.invoke(prompt).content
+    print(f"--- 审查结果: {review} ---")
+    
+    if "PASS" in review:
+        return {"feedback": "PASS"}
+    else:
+        return {"feedback": review, "revision_count": state["revision_count"] + 1}
+
+# --- 5. 路由逻辑 ---
+
+def check_review_outcome(state: AgentState):
+    if state["feedback"] == "PASS" or state["revision_count"] >= 1:
+        return "end"
+    else:
+        return "retry"
+
+# --- 6. 构建工作流 ---
+
 workflow = StateGraph(AgentState)
 
-# 添加节点
 workflow.add_node("parse", parse_intent)
 workflow.add_node("retrieve", retrieve_graph)
 workflow.add_node("generate", generate_answer)
+workflow.add_node("review", review_answer)
 
-# 定义连线
 workflow.set_entry_point("parse")
 workflow.add_edge("parse", "retrieve")
 workflow.add_edge("retrieve", "generate")
-workflow.add_edge("generate", END)
+workflow.add_edge("generate", "review")
 
-# 编译应用
+workflow.add_conditional_edges(
+    "review",
+    check_review_outcome,
+    {
+        "end": END,
+        "retry": "generate"
+    }
+)
 app_graph = workflow.compile()
