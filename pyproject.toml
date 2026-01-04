@@ -13,4 +13,5 @@ dependencies = [
     "networkx>=3.4.2",
     "python-dotenv>=1.2.1",
     "streamlit>=1.52.2",
+    "streamlit-agraph>=0.0.45",
 ]
