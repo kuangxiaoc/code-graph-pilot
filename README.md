@@ -34,10 +34,8 @@ git clone https://github.com/yourname/code-graph-pilot.git
 cd code-graph-pilot
 uv sync
 
-### 2. 启动数据库
-```bash
+
 docker-compose up -d
 
-### 3. 运行
-```bash
+
 uv run streamlit run src/app.py
