@@ -121,7 +121,7 @@ uv run streamlit run src/app.py
 
 | 批量入库与图谱构建 | 深度依赖分析与中文报告 |
 |:---:|:---:|
-| ![alt text](image-1.png) | ![alt text](image-2.png) |
+| ![alt text](assets/image-1.png) | ![alt text](assets/image-2.png) |
 | *支持多文件批量上传与实时物理引擎渲染* | *Qwen-Plus 生成的结构化风险评估* |
 
 ## 🗺️ Roadmap
