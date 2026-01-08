@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from graph_builder import build_graph_from_file, build_graph_for_batch
 # --- 引入可视化库 ---
-# 如果运行报错提示找不到模块，请确保执行过: uv add streamlit-agraph
+# uv add streamlit-agraph
 from streamlit_agraph import agraph, Node, Edge, Config
 
 # --- 引入自定义模块 ---
