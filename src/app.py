@@ -127,9 +127,49 @@ def get_graph_data(limit=100, use_hierarchy=False):
     return nodes, edges
 
 
+def clear_neo4j_database():
+    """清空 Neo4j 数据库"""
+    uri = os.getenv("NEO4J_URI")
+    user = os.getenv("NEO4J_USER")
+    pwd = os.getenv("NEO4J_PASSWORD")
+    try:
+        with GraphDatabase.driver(uri, auth=(user, pwd)) as driver:
+            with driver.session() as session:
+                session.run("MATCH (n) DETACH DELETE n")
+        return True
+    except Exception as e:
+        st.error(f"清空数据库失败: {e}")
+        return False
+
+
 # ================= 侧边栏：控制面板 =================
 with st.sidebar:
     st.title("🛠️ Project Controls")
+    st.markdown("---")
+    
+    # ========== 清空数据库 ==========
+    col_clear1, col_clear2 = st.columns([3, 1])
+    with col_clear1:
+        if st.button("🗑️ 清空数据库", type="secondary"):
+            if clear_neo4j_database():
+                # 同时清空向量索引
+                from embedding import get_embedding_store
+                get_embedding_store().clear()
+                st.success("数据库已清空")
+                st.rerun()
+    with col_clear2:
+        # 显示当前节点数
+        try:
+            uri = os.getenv("NEO4J_URI")
+            user = os.getenv("NEO4J_USER")
+            pwd = os.getenv("NEO4J_PASSWORD")
+            with GraphDatabase.driver(uri, auth=(user, pwd)) as driver:
+                result = driver.execute_query("MATCH (n) RETURN count(n) as count").records
+                node_count = result[0]['count'] if result else 0
+            st.caption(f"节点: {node_count}")
+        except:
+            st.caption("节点: ?")
+    
     st.markdown("---")
     
     # ========== 方式 1: 目录路径输入 ==========
