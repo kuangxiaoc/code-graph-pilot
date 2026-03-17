@@ -279,25 +279,26 @@ st.title("CodeGraph Pilot ✈️")
 st.markdown("#### 结构感知的 AI 代码助手 v2.0")
 
 # 使用 Tabs 分离功能
-tab1, tab2, tab3 = st.tabs(["💬 智能问答", "🔍 语义搜索", "🕸️ 图谱可视化"])
+tab1, tab2 = st.tabs(["💬 智能问答", "🕸️ 图谱可视化"])
 
 # === Tab 1: 智能问答 ===
 with tab1:
     st.markdown("""
-    支持多种查询方式：
+    我是你的代码助手，可以回答各种问题：
+    - **语义搜索**: "找一个处理 JSON 数据的函数"
     - **影响分析**: "修改 process_data 函数会影响哪些代码?"
     - **调用链查询**: "从 main 到 process_data 的调用路径是什么?"
-    - **函数信息**: "process_data 函数是做什么的?"
+    - **函数说明**: "process_data 函数是做什么的?"
     """)
     
     col_in, col_btn = st.columns([5, 1])
     with col_in:
-        query = st.text_input("输入问题:", placeholder="修改 process_data 函数会影响哪些代码?", label_visibility="collapsed")
+        query = st.text_input("输入问题:", placeholder="找一个处理 JSON 数据的函数", label_visibility="collapsed")
     with col_btn:
         run_btn = st.button("提交", type="primary", use_container_width=True)
     
     if run_btn and query:
-        with st.spinner("🤖 Agent 思考中..."):
+        with st.spinner("🤖 思考中..."):
             try:
                 result = app_graph.invoke({"query": query})
                 
@@ -306,50 +307,14 @@ with tab1:
                     st.code(result.get("context", "无"), language="yaml")
                 
                 # 展示回答
-                st.markdown("### 💡 分析结果")
+                st.markdown("### 💡 回答")
                 st.markdown(result["response"])
                 
             except Exception as e:
                 st.error(f"执行错误: {e}")
 
-# === Tab 2: 语义搜索 ===
+# === Tab 2: 图谱可视化 ===
 with tab2:
-    st.markdown("用自然语言描述你想要的功能，系统会找到最相关的函数。")
-    
-    search_query = st.text_input("描述你想要的功能:", placeholder="处理 JSON 数据的函数")
-    top_k = st.slider("返回结果数", 1, 10, 5)
-    
-    if st.button("🔍 搜索", type="primary"):
-        if search_query:
-            with st.spinner("搜索中..."):
-                results = semantic_search(search_query, top_k=top_k)
-                
-                if results:
-                    st.markdown(f"### 找到 {len(results)} 个相关函数")
-                    
-                    for i, r in enumerate(results, 1):
-                        with st.container():
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                st.markdown(f"**{i}. `{r['name']}`**")
-                                st.caption(f"📁 {r['filepath']}:{r['lineno']}")
-                            with col2:
-                                st.metric("相似度", f"{r['similarity']:.2f}")
-                            
-                            if r['docstring']:
-                                st.markdown(f"📄 {r['docstring'][:200]}...")
-                            
-                            with st.expander("查看源码"):
-                                st.code(r['source'], language="python")
-                            
-                            st.markdown("---")
-                else:
-                    st.warning("未找到相关函数。请确保已构建向量索引（需要设置 DASHSCOPE_API_KEY）。")
-        else:
-            st.warning("请输入搜索内容")
-
-# === Tab 3: 图谱可视化 ===
-with tab3:
     col_tools, col_graph = st.columns([1, 4])
     
     with col_tools:
