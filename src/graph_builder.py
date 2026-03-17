@@ -1,10 +1,47 @@
 import ast
 import os
+from typing import List
 from neo4j import GraphDatabase
 
+# 默认忽略的目录
+DEFAULT_IGNORE_DIRS = {
+    '.venv', 'venv', '.env', 'env',
+    '__pycache__', '.git', '.hg', '.svn',
+    'node_modules', '.tox', '.eggs', '*.egg-info',
+    'dist', 'build', '.mypy_cache', '.pytest_cache'
+}
+
+def scan_project_directory(project_path: str, ignore_dirs: List[str] = None) -> List[str]:
+    """
+    递归扫描目录，返回所有 .py 文件的绝对路径
+    
+    Args:
+        project_path: 项目根目录路径
+        ignore_dirs: 额外要忽略的目录名列表
+    
+    Returns:
+        .py 文件的绝对路径列表
+    """
+    if ignore_dirs is None:
+        ignore_dirs = []
+    
+    ignored = DEFAULT_IGNORE_DIRS | set(ignore_dirs)
+    py_files = []
+    
+    for root, dirs, files in os.walk(project_path):
+        # 过滤掉要忽略的目录（原地修改 dirs 列表）
+        dirs[:] = [d for d in dirs if d not in ignored]
+        
+        for file in files:
+            if file.endswith('.py'):
+                py_files.append(os.path.abspath(os.path.join(root, file)))
+    
+    return py_files
+
 class CodeAnalyzer(ast.NodeVisitor):
-    def __init__(self, filepath):
+    def __init__(self, filepath, source_code: str = None):
         self.filepath = filepath
+        self.source_code = source_code
         self.entities = []
         self.relations = []
         self.current_class = None     # 追踪当前类
@@ -42,11 +79,24 @@ class CodeAnalyzer(ast.NodeVisitor):
         
         node_type = "Method" if self.current_class else "Function"
         
+        # 提取 docstring
+        docstring = ast.get_docstring(node) or ""
+        
+        # 提取函数源码
+        func_source = ""
+        if self.source_code:
+            lines = self.source_code.split('\n')
+            start_line = node.lineno - 1
+            end_line = node.end_lineno if hasattr(node, 'end_lineno') else start_line + 1
+            func_source = '\n'.join(lines[start_line:end_line])
+        
         self.entities.append({
             "type": node_type,
             "name": full_name,
             "filepath": self.filepath,
-            "lineno": node.lineno
+            "lineno": node.lineno,
+            "docstring": docstring,
+            "source": func_source
         })
         
         # 如果是方法，建立 BELONGS_TO 关系 (Method -> Class)
@@ -178,27 +228,60 @@ def build_graph_for_batch(file_paths, uri, user, pwd):
     
     total_nodes = 0
     total_rels = 0
+    all_entities = []  # 收集所有实体，用于向量化
     
     # 2. 循环处理每个文件
     for filepath in file_paths:
         try:
             print(f"Analyzing: {filepath}")
-            analyzer = CodeAnalyzer(filepath)
             with open(filepath, "r", encoding="utf-8") as f:
                 source = f.read()
-                if not source.strip(): continue # 跳过空文件
-                tree = ast.parse(source)
-                analyzer.visit(tree)
+            if not source.strip(): continue  # 跳过空文件
+            
+            analyzer = CodeAnalyzer(filepath, source_code=source)
+            tree = ast.parse(source)
+            analyzer.visit(tree)
             
             # 3. 追加写入数据 (不要再 clean 了)
             loader.load_data(analyzer.entities, analyzer.relations)
             
+            all_entities.extend(analyzer.entities)
             total_nodes += len(analyzer.entities)
             total_rels += len(analyzer.relations)
             
         except Exception as e:
             print(f"⚠️ Error parsing {filepath}: {e}")
-            continue # 遇到错误跳过当前文件，继续下一个
+            continue  # 遇到错误跳过当前文件，继续下一个
             
     loader.close()
-    return total_nodes, total_rels
+    return total_nodes, total_rels, all_entities
+
+
+def build_graph_from_directory(directory_path: str, uri: str, user: str, pwd: str, 
+                                ignore_dirs: List[str] = None) -> tuple:
+    """
+    从目录构建知识图谱
+    
+    Args:
+        directory_path: 项目目录路径
+        uri: Neo4j URI
+        user: Neo4j 用户名
+        pwd: Neo4j 密码
+        ignore_dirs: 额外要忽略的目录
+    
+    Returns:
+        (节点数, 关系数, 实体列表, 文件数)
+    """
+    # 1. 扫描目录
+    py_files = scan_project_directory(directory_path, ignore_dirs)
+    
+    if not py_files:
+        print(f"⚠️ No .py files found in {directory_path}")
+        return 0, 0, [], 0
+    
+    print(f"📁 Found {len(py_files)} Python files")
+    
+    # 2. 批量构建图谱
+    total_nodes, total_rels, all_entities = build_graph_for_batch(py_files, uri, user, pwd)
+    
+    return total_nodes, total_rels, all_entities, len(py_files)

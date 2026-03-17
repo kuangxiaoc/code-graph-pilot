@@ -14,4 +14,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "streamlit>=1.52.2",
     "streamlit-agraph>=0.0.45",
+    # 向量搜索（复用 OpenAI 兼容 API，无需 dashscope）
+    "faiss-cpu>=1.8.0",
+    "numpy>=1.26.0",
 ]
