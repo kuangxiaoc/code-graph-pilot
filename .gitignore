@@ -86,3 +86,6 @@ dmypy.json
 
 # UV package manager
 .uv_cache/
+
+.opencode/
+opencode.json

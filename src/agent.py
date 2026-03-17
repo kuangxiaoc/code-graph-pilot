@@ -13,7 +13,7 @@ load_dotenv()
 
 # --- 1. 配置 Qwen 模型 ---
 llm = ChatOpenAI(
-    model='qwen-plus',
+    model='qwen3.5-27b',
     openai_api_key=os.getenv("QWEN_API_KEY"),
     openai_api_base=os.getenv("QWEN_BASE_URL"),
     temperature=0.1,

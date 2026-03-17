@@ -167,7 +167,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 🧠 Backend Info")
-    st.info(f"LLM: **Qwen-Plus**\nDB: **Neo4j**\nAgent: **LangGraph**")
+    st.info(f"LLM: **Qwen3**\nDB: **Neo4j**\nAgent: **LangGraph**")
 
 # ================= 主界面 =================
 st.title("CodeGraph Pilot ✈️")
