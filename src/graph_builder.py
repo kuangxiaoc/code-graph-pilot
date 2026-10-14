@@ -56,7 +56,12 @@ def module_name_for_path(filepath, root):
         return derive_module_name(filepath)
 
     parts = list(rel.parts)
-    if parts and parts[-1] == "__init__.py":
+    if not parts:
+        # root 与 filepath 是同一个文件时 relative_to 得到空路径。
+        # 单文件增量重建 (codegraph build x.py --keep) 走的正是这条路,
+        # 此前会 IndexError 进而报"没有文件解析成功"。
+        return derive_module_name(filepath)
+    if parts[-1] == "__init__.py":
         parts = parts[:-1]
     else:
         parts[-1] = Path(parts[-1]).stem

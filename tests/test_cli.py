@@ -123,7 +123,12 @@ def test_impact_missing_returns_nonzero(store, capsys):
 
 # --- analyze (LLM 门禁) ---
 
-def test_analyze_without_key_gives_readable_error(capsys):
+def test_analyze_without_key_gives_readable_error(monkeypatch, capsys):
+    # 必须显式清空 Key: 开发者本地 .env 里通常有真 Key, 不清的话这条
+    # 用例会真的去调 LLM (既慢又花 token, 且断言必然失败)。
+    monkeypatch.delenv("QWEN_API_KEY", raising=False)
+    monkeypatch.setattr("agent.has_llm_credentials", lambda: False)
+
     code = cli.main(["analyze", "修改 f 会影响谁"])
     captured = capsys.readouterr()
     assert code == 1
@@ -250,3 +255,54 @@ def test_build_db_failure_is_readable(monkeypatch, tmp_path, capsys):
     assert code == 1
     assert "docker-compose" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_package_parent_for_single_file_in_package(tmp_path):
+    """单文件增量必须算出完整模块名, 否则会造出重复符号。
+
+    实测 bug: 传 webapp_py/utils/validators.py 时模块名变成
+    "validators" 而不是 "utils.validators", 增量重建后图里出现两个
+    validate_token, symbol 查询报"匹配到多个实体"。
+    """
+    from codegraph import _package_parent
+    from graph_builder import module_name_for_path
+    from pathlib import Path
+
+    pkg = tmp_path / "mypkg"
+    (pkg / "utils").mkdir(parents=True)
+    (pkg / "auth").mkdir()
+    (pkg / "utils" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    f = pkg / "utils" / "validators.py"
+    f.write_text("def v():\n    pass\n", encoding="utf-8")
+
+    base = _package_parent(f)
+    assert module_name_for_path(f, base) == "mypkg.utils.validators"
+
+
+def test_package_parent_without_init_files(tmp_path):
+    """无 __init__.py 的源码树 (fixture 形态) 也要定位到包根。"""
+    from codegraph import _package_parent
+    from graph_builder import module_name_for_path
+    from pathlib import Path
+
+    pkg = tmp_path / "webapp_py"
+    (pkg / "utils").mkdir(parents=True)
+    (pkg / "auth").mkdir()
+    (pkg / "utils" / "validators.py").write_text("def v():\n    pass\n", encoding="utf-8")
+
+    f = pkg / "utils" / "validators.py"
+    base = _package_parent(f)
+    assert module_name_for_path(f, base) == "utils.validators"
+
+
+def test_module_name_for_single_file_does_not_crash(tmp_path):
+    """root 与 filepath 相同时不得 IndexError (单文件增量的旧崩溃点)。"""
+    from graph_builder import module_name_for_path
+    from pathlib import Path
+
+    f = tmp_path / "solo.py"
+    f.write_text("def f():\n    pass\n", encoding="utf-8")
+    # 不得抛 IndexError
+    name = module_name_for_path(f, f)
+    assert name == "solo"

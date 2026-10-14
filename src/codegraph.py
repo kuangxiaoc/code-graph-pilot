@@ -45,6 +45,46 @@ def _fail(message, code=1):
     return code
 
 
+def _package_parent(path):
+    """上溯到包的父目录, 使单文件增量也能算出正确的模块名。
+
+    传单个文件时不能拿文件自己当基准 —— 那会得到 "validators"
+    而不是 "utils.validators", 增量重建后图里出现两个 validate_token
+    (实测: symbol validate_token 报"匹配到多个实体")。
+
+    两种包形态都要处理:
+    - 有 __init__.py: 沿包结构上溯到最外层包, 再上一级
+    - 无 __init__.py (fixture / 普通源码树): 上溯到第一个"自身不含
+      .py、但子目录里有 .py"的目录 —— 它就是包根
+    """
+    p = Path(path).resolve()
+    if p.is_dir():
+        return p
+
+    cur = p.parent
+    if (cur / "__init__.py").exists():
+        # 一路向上只要父目录仍是包就继续, 停在最外层包的**父目录**
+        # (requests/models.py -> /src, 于是模块名是 requests.models
+        # 而不是 src.requests.models)。
+        while (cur.parent / "__init__.py").exists() and cur.parent != cur:
+            cur = cur.parent
+        return cur.parent if cur.parent != cur else cur
+
+    while True:
+        parent = cur.parent
+        if parent == cur:
+            break
+        has_py = any(cur.glob("*.py"))
+        subdirs = [d for d in cur.iterdir() if d.is_dir()
+                   and not d.name.startswith((".", "__"))]
+        sub_has_py = any(any(d.rglob("*.py")) for d in subdirs)
+        # cur 自身没有 .py 而子目录里有: cur 就是包根
+        if not has_py and sub_has_py and subdirs:
+            return cur
+        cur = parent
+    return cur
+
+
 # --- 子命令 ---
 
 def cmd_build(args):
@@ -59,12 +99,18 @@ def cmd_build(args):
     if not files:
         return _fail(f"未找到 .py 文件: {root}")
 
+    # 算模块名的基准目录。传单个文件时不能拿文件自己当 root —— 那会得到
+    # 模块名 "validators" 而不是 "utils.validators", 增量重建后图里出现
+    # 两个 validate_token (实测: symbol validate_token 报"匹配到多个实体")。
+    # 沿目录上溯到最外层不含 __init__.py 的目录, 它就是包的父目录。
+    base = _package_parent(root)
+
     print(f"解析 {len(files)} 个文件...", file=sys.stderr)
     analyzers, skipped = [], []
     for filepath in files:
         try:
             analyzers.append(
-                CodeAnalyzer(filepath, module=module_name_for_path(Path(filepath), root))
+                CodeAnalyzer(filepath, module=module_name_for_path(Path(filepath), base))
             )
         except SyntaxError as exc:
             skipped.append({"file": filepath, "reason": f"语法错误: {exc}"})
