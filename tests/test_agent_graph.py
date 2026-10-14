@@ -148,6 +148,16 @@ def live_db(monkeypatch):
         "labels": ["Function"],
         "calls": [],
         "called_by": ["auth.tokens:refresh_token", "auth.middleware:authenticate"],
+    }, {
+        # Method 级节点: 用于验证点分限定名解析到 Method 而非 Class
+        "uid": "auth.service:AuthService.login",
+        "name": "login",
+        "module": "auth.service",
+        "filepath": "/x/auth/service.py",
+        "lineno": 20,
+        "labels": ["Method"],
+        "calls": [],
+        "called_by": ["routes.api:login_route"],
     })
     monkeypatch.setattr(gs, "get_store", lambda: store)
     return store
@@ -156,16 +166,30 @@ def live_db(monkeypatch):
 class _FakeStore:
     """最小假 store: 只有 symbol() 会被 agent 的检索节点调用。"""
 
-    def __init__(self, record):
-        self.record = record
+    def __init__(self, *records):
+        # 两种形态都要支持: 正常符号记录 (含 uid), 以及固定错误响应
+        # ({"error": ...}) —— dead_db 等用例用后者模拟连接失败。
+        self.records = {r["uid"]: r for r in records if "uid" in r}
+        self.errors = [r for r in records if "uid" not in r]
         self.calls = []
 
     def symbol(self, name):
         self.calls.append(name)
-        # 只认 validate_token: 其他名字报"未找到", 这样"跳过不在图中的候选"
-        # 这个行为才可测 (对任何名字都返回成功的话测不出跳过逻辑)。
-        if name == "validate_token":
-            return dict(self.record)
+        if self.errors:
+            return dict(self.errors[0])
+        # 只认已知符号 (含点分限定名): 其他名字报"未找到", 这样
+        # "跳过不在图中的候选"这个行为才可测 (对任何名字都返回成功的话
+        # 测不出跳过逻辑)。
+        # 只按 uid 的限定名部分精确命中:
+        #   validate_token      -> utils.validators:validate_token
+        #   AuthService.login   -> auth.service:AuthService.login
+        # 刻意不按裸名 (rec["name"]) 匹配 —— Method 的裸名是 login,
+        # 会让裸名 login 命中 Method, 使"图中没有 login 时必须跳过候选"
+        # 这个用例失效。
+        for uid, rec in self.records.items():
+            qualname = uid.split(":", 1)[1] if ":" in uid else uid
+            if name == qualname:
+                return dict(rec)
         return {"error": f"⚠️ 在知识图谱中未找到符号 '{name}'。"}
 
     def close(self):
@@ -349,3 +373,26 @@ def test_resolve_target_reports_when_nothing_matches(dead_db):
     target, record = resolve_target_symbol("修改 totally_nonexistent_symbol 会影响谁")
     assert record.get("error")
     assert "未找到" in record["error"] or "错误" in record["error"]
+
+
+def test_dotted_qualname_is_candidate_before_its_head():
+    """`AuthService.login` 必须先于 `AuthService` 成为候选。
+
+    30 次真实 LLM 基线暴露: 点分限定名被按单词切成 [AuthService, login],
+    排在前面的 AuthService 是 Class, 于是解析到 Class 而非 Method ——
+    检索结果是 Class 级调用者, 缺 Method 级, 模型正确回答反被判成幻觉。
+    """
+    from agent import target_candidates
+
+    candidates = target_candidates("AuthService.login 被谁依赖")
+    assert candidates[0] == "AuthService.login"
+    assert "AuthService" in candidates          # 单段仍在候选里作兜底
+
+
+def test_dotted_candidate_resolves_to_method_not_class(live_db):
+    """端到端: 点分限定名必须定位到 Method 节点 (label=Method)。"""
+    from agent import resolve_target_symbol
+
+    target, record = resolve_target_symbol("AuthService.login 被谁依赖")
+    assert target == "AuthService.login"
+    assert "Method" in (record.get("labels") or [])

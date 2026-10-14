@@ -236,6 +236,17 @@ def target_candidates(query):
         if _looks_like_symbol(token):
             candidates.append(token)
 
+    # 点分限定名必须整体参与候选: "AuthService.login 被谁依赖" 若按
+    # 单词切开会得到 [AuthService, login], 而 AuthService 排在前面 ——
+    # 于是解析到 Class 而不是 Method, 检索出的调用者是 Class 级的,
+    # 缺少 Method 级调用者, 模型正确回答后反被判成幻觉 (30 次基线实测)。
+    for match in re.finditer(
+        r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", query
+    ):
+        token = match.group(0)
+        if _looks_like_symbol(token):
+            candidates.append(token)
+
     words = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", query)
     for token in words:
         if _looks_like_symbol(token):
