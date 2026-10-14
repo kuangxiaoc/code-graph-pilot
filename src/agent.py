@@ -11,14 +11,22 @@ from langgraph.graph import StateGraph, END
 # 加载环境变量
 load_dotenv()
 
-# --- 1. 配置 Qwen 模型 ---
-llm = ChatOpenAI(
-    model='qwen3.5-27b',
-    openai_api_key=os.getenv("QWEN_API_KEY"),
-    openai_api_base=os.getenv("QWEN_BASE_URL"),
-    temperature=0.1,
-    streaming=True
-)
+# --- 1. 配置 Qwen 模型 (惰性构造) ---
+# 惰性构造使本模块在无 API Key 时也能被导入, 从而让图查询逻辑可离线测试。
+_llm = None
+
+
+def get_llm():
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(
+            model=os.getenv("QWEN_MODEL", "qwen3.5-27b"),
+            openai_api_key=os.getenv("QWEN_API_KEY"),
+            openai_api_base=os.getenv("QWEN_BASE_URL"),
+            temperature=0.1,
+            streaming=True,
+        )
+    return _llm
 
 # --- 2. Neo4j 图检索工具 (GraphRAG 核心) ---
 def query_dependencies(func_name: str) -> str:
@@ -28,39 +36,54 @@ def query_dependencies(func_name: str) -> str:
     uri = os.getenv("NEO4J_URI")
     auth = (os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))
     
+    # 限定 label 到 Function/Method/Class: 旧写法 MATCH (target:Function) 无法匹配方法,
+    # 而放宽到不带 label 又会让同名 Class/Function 互相串。
     query = """
-    MATCH (target:Function {name: $name})
+    MATCH (target)
+    WHERE (target:Function OR target:Method OR target:Class)
+      AND (target.name = $name OR target.uid ENDS WITH $suffix)
     OPTIONAL MATCH (target)-[:CALLS]->(downstream)
     OPTIONAL MATCH (upstream)-[:CALLS]->(target)
-    RETURN 
+    RETURN
+        target.uid as uid,
+        target.name as name,
+        target.module as module,
         target.filepath as filepath,
         target.lineno as lineno,
         collect(DISTINCT downstream.name) as calls,
         collect(DISTINCT upstream.name) as called_by
     """
+    suffix = f":{func_name}"
     
     try:
         with GraphDatabase.driver(uri, auth=auth) as driver:
-            result = driver.execute_query(query, name=func_name).records
-            
+            result = driver.execute_query(query, name=func_name, suffix=suffix).records
+
+            if len(result) > 1:
+                matches = ", ".join(r["uid"] for r in result)
+                return (f"⚠️ 函数名 '{func_name}' 在图中匹配到多个实体: {matches}。"
+                        f"请使用 module:name 形式指定唯一目标。")
+
             if not result:
                 return f"⚠️ 警告：在知识图谱中未找到函数 '{func_name}'。请检查函数名是否正确。"
             
             record = result[0]
+            display = record["uid"] or func_name
             
             # 这里保留英文 Key 是为了让 LLM 更准确地理解结构，但我们在 Prompt 里会要求它用中文解释
             context_str = f"""
-            [目标实体]: {func_name}
+            [目标实体]: {display}
+            [模块]: {record['module'] or '未知'}
             [位置]: {record['filepath']} (行号: {record.get('lineno', '未知')})
             
             [图谱依赖分析]
             1. 下游依赖 (它调用了谁 / Outbound):
                {record['calls'] if record['calls'] else "无 (None)"}
-               -> 修改 {func_name} 可能会改变传给这些函数的参数。
+               -> 修改 {display} 可能会改变传给这些函数的参数。
                
             2. 上游影响 (谁调用了它 / Inbound):
                {record['called_by'] if record['called_by'] else "无 (None - 可能是入口函数或未被使用)"}
-               -> 严重警告: 修改 {func_name} 将直接导致这些调用者出错。
+               -> 严重警告: 修改 {display} 将直接导致这些调用者出错。
             """
             return context_str
             
@@ -122,7 +145,7 @@ def generate_answer(state: AgentState):
     5. 保持专业、条理清晰，使用 Markdown 格式。
     """
     
-    response = llm.invoke(prompt)
+    response = get_llm().invoke(prompt)
     return {"response": response.content}
 
 def review_answer(state: AgentState):
@@ -144,7 +167,7 @@ def review_answer(state: AgentState):
     如果有问题，输出 "FAIL: <具体原因>"。
     """
     
-    review = llm.invoke(prompt).content
+    review = get_llm().invoke(prompt).content
     print(f"--- 审查结果: {review} ---")
     
     if "PASS" in review:

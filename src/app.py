@@ -52,40 +52,41 @@ def get_graph_data(limit=100):
                 rel = record['r']
                 
                 # --- 处理源节点 ---
-                if src['name'] not in node_ids:
+                # 以 uid 为节点键: name 在跨模块同名的场景下不再唯一
+                if src['uid'] not in node_ids:
                     # 根据类型区分颜色 (Class用紫色, Function用红色)
                     n_type = list(src.labels)[0] if src.labels else "Node"
                     color = "#9D4EDD" if "Class" in n_type else "#FF6B6B"
-                    
+
                     nodes.append(Node(
-                        id=src['name'], 
-                        label=src['name'], 
-                        size=25, 
+                        id=src['uid'],
+                        label=src['name'],
+                        size=25,
                         shape="dot",
                         color=color,
-                        title=f"File: {src.get('filepath', 'N/A')}\nType: {n_type}"
+                        title=f"Module: {src.get('module', 'N/A')}\nFile: {src.get('filepath', 'N/A')}\nType: {n_type}"
                     ))
-                    node_ids.add(src['name'])
-                
+                    node_ids.add(src['uid'])
+
                 # --- 处理目标节点 ---
-                if dst['name'] not in node_ids:
+                if dst['uid'] not in node_ids:
                     n_type = list(dst.labels)[0] if dst.labels else "Node"
                     color = "#9D4EDD" if "Class" in n_type else "#4D96FF"
-                    
+
                     nodes.append(Node(
-                        id=dst['name'], 
-                        label=dst['name'], 
-                        size=20, 
+                        id=dst['uid'],
+                        label=dst['name'],
+                        size=20,
                         shape="dot",
                         color=color
                     ))
-                    node_ids.add(dst['name'])
+                    node_ids.add(dst['uid'])
                 
                 # --- 处理边 ---
                 edges.append(
                     Edge(
-                    source=src['name'], 
-                    target=dst['name'], 
+                    source=src['uid'],
+                    target=dst['uid'],
                     label=rel.type, 
                     color="#A0A0A0",
                     # 核心修改：优化字体样式
