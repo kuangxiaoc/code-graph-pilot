@@ -17,7 +17,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 | 维度 | 规则 | 检查命令 | 运行时机 |
 |---|---|---|---|
 | 图完整性 | fixture 图悬空边 = 0 | `uv run pytest tests/test_benchmark_runner.py -q` | 每次改动后 |
-| 检索质量 | fixture macro recall ≥ 0.94 (不倒退) | 同上 | 每次改动后 |
+| 检索质量 | fixture macro recall = 1.000 (12 场景全满分) | `uv run python -m benchmarks.runner` | 每次改动后 |
 | 单元测试 | 全部通过 | `uv run pytest tests/ -q` | 任务结束 |
 | 本体约束 | fixture 违规数 = 已登记缺口数 | `uv run python -m ontology.validate` | 任务结束 |
 | 指标口径 | 检索失败的 run 不得计入幻觉率均值 | `uv run pytest tests/test_observability_report.py -q` | 每次改动后 |
@@ -34,8 +34,8 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 
 | 指标 | 当前值 | 方向 |
 |---|---|---|
-| 单元测试数 | 171 (2026-10-14, 幻觉率口径审计后) | 只增不减 |
-| fixture macro recall | 0.945 (12 计分场景) | 只增不减 |
+| 单元测试数 | 180 (2026-10-14, 类型推断后) | 只增不减 |
+| fixture macro recall | 1.000 (12 计分场景, 全满分) | 只增不减 |
 | fixture 悬空边 | 0 | 保持 0 |
 | 本体违规数 | 0 (244 triples) | 保持 0 |
 
@@ -71,7 +71,7 @@ grounding recall **100%**。该数字口径演进过三轮, 每次都是指标�
  (用户指示"自己完成后续所有工作"), 无真人可访, 因此:
 
 - 采用了该技能给出的**默认值** (Q2 block / Q3 测量并守住 / Q4 90 秒)
-- 数字全部来自**实测**, 非编造: 41 个测试、0.945 recall 均为本次运行输出
+- 数字全部来自**实测**, 非编造: 测试数与 recall 均为本次运行输出
 - 未选择需要运行中 URL 的维度 (Lighthouse/axe) —— 本项目无页面可测,
   该技能明确说这种情况应"说明并放弃该维度"而非发明一个跑不起来的检查
 

@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-171%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-180%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -193,10 +193,10 @@ uv run python -m codegraph report --json       # 机器可读
 
 | 指标 | 值 | 说明 |
 |---|---|---|
-| fixture macro recall | **0.945** | 12 个计分场景, 10 个满分, 1 个已知缺口 |
+| fixture macro recall | **1.000** | 12 个计分场景, 全部满分 (2026-10-14 起) |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
-| fixture 图规模 | 26 符号 / 67 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **171 passed** | 全离线: 不调 LLM, 不联网 |
+| fixture 图规模 | 26 符号 / 71 关系 | `benchmarks/fixtures/webapp_py` |
+| 单元测试 | **180 passed** | 全离线: 不调 LLM, 不联网 |
 | 本体违规 | **0** / 244 triples | 见上 |
 
 ```bash
@@ -242,7 +242,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 171 个测试, 全离线
+tests/                # 180 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
@@ -266,7 +266,6 @@ CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
 - [ ] 真实仓库评测: 在 `psf/requests` 规模上测跨文件覆盖率, 公布残差
 - [ ] 单文件级 dirty 检测: 当前增量仍需全量解析该目录 (跨文件解析的固有依赖), 加文件 hash 缓存才能只重解析变更文件
 - [ ] MCP 入口: 让编排能力可被外部 agent 调用 (CLI 已交付; MCP 的触发条件见 `docs/specs/SPEC-delivery-surface.md`)
-- [ ] 局部变量类型推断: 提升 `repo.save()` 这类调用的解析率
 
 **明确不做 (YAGNI):**
 - 多语言 (Java/Go): 需引入 tree-sitter, 与当前目标正交
