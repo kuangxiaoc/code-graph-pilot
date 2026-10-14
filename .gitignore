@@ -89,3 +89,6 @@ dmypy.json
 
 .opencode/
 opencode.json
+
+# Agent 轨迹 (含用户 query 原文, 不入库)
+traces/

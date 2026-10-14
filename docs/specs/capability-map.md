@@ -11,7 +11,7 @@
 || `eval-harness` | fixture、人工 ground truth、场景打分、回归基线 | `graph-core` | 已交付 |
 | `ontology` | RDFS/OWL schema + SHACL 约束校验 + 违规报告 | `graph-core` | 未开始 |
 | `agent-orchestration` | LangGraph 多节点、checkpoint、意图抽取 | `graph-core` | 部分 (4 节点, 无 checkpoint) |
-| `observability` | 轨迹埋点、幻觉率、修正有效率 | `agent-orchestration` | 未开始 |
+| `observability` | 轨迹埋点、幻觉率、修正有效率 | `agent-orchestration` | 已交付 (口径见 CONSTRAINTS.md) |
 | `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration` | 部分 (仅 UI) |
 
 ## 依赖方向
@@ -30,9 +30,9 @@ graph-core ──┬──> eval-harness
 ```
 1. graph-core            (已完成, 继续收尾: 局部变量类型推断、增量更新)
 2. eval-harness          (已完成, 基线已固化)
-3. ontology              ← 下一站: 用户点名要巩固的能力
-4. observability         ← 独有差异化: 竞品无 LLM 生成环节, 不测幻觉率
-5. delivery-surface      ← MCP/CLI, 最后做
+3. ontology              (已完成: 244 triples, 0 违规, 可检出 4 类缺陷)
+4. observability         (已完成: 幻觉率/覆盖率/修正有效率, 口径已锁定)
+5. delivery-surface      ← 下一站: CLI / MCP 入口
 ```
 
 ## 判定 "独立可切" 的依据

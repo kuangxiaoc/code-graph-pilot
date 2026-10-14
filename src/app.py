@@ -8,10 +8,8 @@ from graph_builder import build_graph_from_file, build_graph_for_batch
 # uv add streamlit-agraph
 from streamlit_agraph import agraph, Node, Edge, Config
 
-# --- 引入自定义模块 ---
-# 确保 graph_builder.py 和 agent.py 都在 src 目录下
 from graph_builder import build_graph_from_file
-from agent import app_graph
+from agent import app_graph, run_analysis, render_context
 
 # 加载环境变量
 load_dotenv()
@@ -198,15 +196,30 @@ with tab1:
         with st.spinner("🤖 Agent is thinking... (Retrieving Graph -> Reasoning -> Reviewing)"):
             try:
                 # 调用 LangGraph Agent
-                # invoke 返回的是 AgentState 字典
-                result = app_graph.invoke({"query": query})
+                # 走 run_analysis 而不是直接 invoke: 否则 UI 是一次性调用,
+                # 不产生轨迹, 成为可观测性的盲区 (报告里永远看不到 UI 流量)。
+                result, trace = run_analysis(query)
                 
                 # 1. 展示 Agent 思考过程中的证据 (Context)
                 with st.expander("🔍 Evidence from Knowledge Graph (RAG Context)", expanded=False):
                     if "context" in result:
-                        st.code(result["context"], language="yaml")
+                        record = result.get("graph_record") or {}
+                        if record.get("error"):
+                            st.error(record["error"])
+                        else:
+                            st.code(render_context(record), language="yaml")
                     else:
                         st.warning("No context retrieved.")
+
+                # 2. 轨迹摘要: 让 UI 流量也能在 report 里被看到
+                if trace:
+                    metrics = trace["metrics"]
+                    rate = metrics["hallucination_rate"]
+                    st.caption(
+                        f"终止: {trace['terminated_by']} · "
+                        f"幻觉率: {'n/a (检索失败)' if rate is None else f'{rate * 100:.0f}%'} · "
+                        f"耗时: {trace['duration_ms']} ms"
+                    )
 
                 # 2. 展示最终回答
                 st.markdown("### 💡 Analysis Result")
