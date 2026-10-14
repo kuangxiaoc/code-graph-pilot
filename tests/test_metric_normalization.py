@@ -168,3 +168,88 @@ def test_grounding_with_list_literal_quotes():
     metrics = compute_metrics(retrieved, response)
     assert metrics["grounding_recall"] == 1.0
     assert metrics["hallucinated"] == []
+
+
+# --- 建议语境 / 路径 / 装饰器 (30 次真实 LLM 基线暴露, 详见下) ---
+#
+# 起因: 30 次基线跑出 40.4% 幻觉率, 逐条人工审计 105 个 flagged 符号后
+# 发现**真幻觉为 0**, 全部是抽取假阳性。修完降到 3.6%。这些测试锁住
+# 每类假阳性, 防止以后有人改抽取规则时把它们放回来。
+
+def test_proposed_new_name_is_not_hallucination():
+    """模型故意编的新名字 ("建议新增 `validate_token_v2`") 不算幻觉。"""
+    for name in ("validate_token_v2", "authenticate_v2", "login_v2",
+                 "validate_token_detailed", "legacy_wrapper", "new_adapter"):
+        assert extract_symbols("建议新增 `%s` 做渐进式迁移" % name) == set(), name
+
+
+def test_file_path_segments_are_not_symbols():
+    """路径里的目录名 (webapp_py) 不得被抽成符号 —— 实测 14/14 次都源于此。"""
+    text = ("**文件位置** | `benchmarks/fixtures/webapp_py/utils/validators.py`"
+            " (第 8 行) 修改 `validate_token`")
+    claimed = extract_symbols(text)
+    assert "validate_token" in claimed
+    assert "webapp_py" not in claimed
+    assert not any("fixtures" in c or "benchmarks" in c for c in claimed)
+
+
+def test_decorator_and_typing_are_not_symbols():
+    assert extract_symbols("保留旧方法签名为废弃别名 (`@deprecated`)") == set()
+    assert extract_symbols("考虑返回兼容对象 (`NamedTuple`)") == set()
+
+
+def test_python_keywords_and_stdlib_are_not_symbols():
+    for kw in ("async", "await", "tuple", "datetime", "secrets", "hashlib"):
+        assert extract_symbols("若改为 `%s` 需注意上游" % kw) == set(), kw
+
+
+def test_bare_method_name_matches_qualified_uid():
+    """图里存 AuthService.login, 回答写裸名 login —— 必须能对齐。
+
+    注意 recall 只算 0.5: wrapper 确实没被提到, grounded 只含 AuthService.login。
+    这里断言的是"裸名不被判成幻觉", 而不是"recall 必须满分"。
+    """
+    retrieved = {"auth.service:AuthService.login", "auth.middleware:wrapper"}
+    response = "若修改了 `login` 的参数签名, 4 个调用方都会受影响。"
+    metrics = compute_metrics(retrieved, response)
+    assert metrics["hallucinated"] == []
+    assert metrics["grounded"] == ["AuthService.login"]
+
+
+def test_recall_denominator_is_not_inflated_by_bare_names():
+    """裸名只能用于匹配, 不得塞进 retrieved —— 否则 recall 系统性虚低。"""
+    retrieved = {"auth.service:AuthService.login"}
+    # 只提到裸名 login, 没提 wrapper 等其他符号
+    metrics = compute_metrics(retrieved, "修改 `login` 影响面很大。")
+    assert metrics["grounding_recall"] == 1.0
+    assert metrics["retrieved_count"] == 1
+
+
+def test_module_name_is_not_expanded_into_symbol():
+    """utils.validators 不得展开出 validators —— 那会凭空造符号。"""
+    retrieved = {"utils.validators:validate_token"}
+    response = "该符号位于 `utils.validators` 与 `validate_token`。"
+    metrics = compute_metrics(retrieved, response)
+    assert "validators" not in metrics["hallucinated"]
+
+
+def test_full_real_response_scores_low():
+    """端到端: 一段真实的重构建议回答, 幻觉率必须为 0。"""
+    retrieved = {
+        "auth.middleware:authenticate",
+        "auth.tokens:refresh_token",
+        "utils.validators:validate_token",
+    }
+    response = """
+    # `validate_token` 修改影响分析报告
+    **文件位置** | `benchmarks/fixtures/webapp_py/utils/validators.py` (第 8 行)
+    该函数存在 2 个上游调用者: `refresh_token` 与 `authenticate`。
+    1. 保持向后兼容: 新增参数使用默认值; 破坏性变更建议新增
+       `validate_token_v2` 而非原地修改。
+    2. 返回值可考虑 `NamedTuple`; 旧签名保留为 `@deprecated` 别名。
+    3. 若改为 `async` 需注意上游未 `await`。
+    """
+    metrics = compute_metrics(retrieved, response)
+    assert metrics["hallucinated"] == []
+    assert metrics["hallucination_rate"] == 0.0
+    assert metrics["grounding_recall"] == 1.0

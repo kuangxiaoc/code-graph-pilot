@@ -25,7 +25,7 @@ def get_llm():
             openai_api_key=os.getenv("QWEN_API_KEY"),
             openai_api_base=os.getenv("QWEN_BASE_URL"),
             temperature=0.1,
-            streaming=True,
+            streaming=False,
         )
     return _llm
 

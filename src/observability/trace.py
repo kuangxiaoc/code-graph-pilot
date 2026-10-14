@@ -60,6 +60,44 @@ _PLACEHOLDERS = {
     "无", "无 (None)", "无(None)", "None", "未知", "N/A", "n/a", "",
 }
 
+# 重构建议里的固定用语, 与图无关。
+_ADVICE_WORDS = {
+    "deprecated", "legacy", "wrapper", "adapter", "refactor", "fallback",
+    "shim", "stub", "mock", "fixture", "breaking", "signature",
+}
+
+# Python 关键字: 裸出现时几乎总在讨论语言语义而非图里的符号。
+_PYTHON_KEYWORDS = {
+    "async", "await", "class", "def", "elif", "except", "finally",
+    "lambda", "raise", "yield", "with", "pass", "break", "continue",
+    "global", "nonlocal", "assert", "del", "is", "not", "and", "or",
+    "if", "else", "for", "while", "try", "in", "as", "from", "import",
+}
+
+# 标准库 / 常见第三方包名: 重构建议里讨论依赖时必然出现, 不是图里的符号。
+_STDLIB_WORDS = {
+    "tuple", "datetime", "hashlib", "hmac", "secrets", "dataclass",
+    "jwt", "itsdangerous", "functools", "itertools", "collections",
+    "pathlib", "typing", "dataclasses", "abc", "enum", "logging",
+    "os", "sys", "re", "json", "time", "math", "random", "uuid",
+    "base64", "binascii", "struct", "textwrap", "string", "decimal",
+}
+
+# typing 构造: 模型建议"返回值用 NamedTuple / Optional" 时指的是类型,
+# 不是图里的符号。
+_TYPING_WORDS = {
+    "NamedTuple", "TypedDict", "Optional", "Union", "Callable", "Generic",
+    "Tuple", "List", "Dict", "Set", "Any", "Final", "Literal",
+}
+
+# 建议语境里模型会**故意**编新名字: "破坏性变更建议新增 `validate_token_v2`"。
+# 这类名字按设计就不存在于图里 —— 判成幻觉等于惩罚模型给出渐进式迁移建议。
+# 用后缀形态识别而不是列名字, 否则追不上模型每次换的编号。
+_PROPOSED_NAME_RE = re.compile(
+    r"_(v\d+|new|old|legacy|deprecated|detailed|extended|wrapper|adapter|compat)$",
+    re.IGNORECASE,
+)
+
 # 模块名形态: 全小写点分 (auth.service, utils.validators)。
 # 这些是模块而不是符号, 但真实回答里常以 "auth.middleware 模块" 的形式出现。
 _MODULE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+$")
@@ -75,6 +113,11 @@ _IDENT_RE = re.compile(
     r"(?:\.[A-Za-z_][A-Za-z0-9_]*)*"      # 可选的点分后缀 (AuthService.login)
     r"(?![A-Za-z0-9_.])"
 )
+
+# 文件路径形态 (benchmarks/fixtures/webapp_py/utils/validators.py)。
+# 全文扫描前先抹掉路径, 否则路径的每个目录名都会被当成符号
+# (webapp_py 实测 14/14 次都源于此)。
+_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*(?:/[A-Za-z0-9_.]+)+")
 
 
 def _redact(text):
@@ -151,7 +194,11 @@ def extract_symbols(text, known=None):
         found |= _symbols_from_quoted(match.group(1), known_norm)
 
     # 2. 裸标识符
-    for match in _IDENT_RE.finditer(text):
+    # 先抹掉文件路径: 反引号路径已被上面的 "/" 规则挡掉, 但这条全文扫描
+    # 不看反引号, 会把 benchmarks/fixtures/webapp_py/utils/validators.py
+    # 里的每一段单独抽出来 (webapp_py 实测 14/14 次都源于此)。
+    scanned = _PATH_RE.sub(" ", text)
+    for match in _IDENT_RE.finditer(scanned):
         token = match.group(0)
         # module:qualname 形式只取 qualname 部分
         if ":" in token:
@@ -172,6 +219,16 @@ def _is_bare_symbol(token):
     低估方向 (漏抽低估幻觉率, 误抽则让指标失去意义)。
     """
     if token in _STOPWORDS or token in _COMMON_WORDS:
+        return False
+    if token in _PYTHON_KEYWORDS or token in _STDLIB_WORDS:
+        return False
+    if token.lower() in _ADVICE_WORDS:
+        return False
+    if token in _TYPING_WORDS:
+        return False
+    if token.startswith("@"):          # 装饰器 (@deprecated)
+        return False
+    if _PROPOSED_NAME_RE.search(token):
         return False
     if token in _PLACEHOLDERS:
         return False
@@ -205,7 +262,28 @@ def _symbols_from_quoted(fragment, known_norm):
     # 排除占位符 (无 (None) / 无 / 未知) —— 它们不是符号
     if not token or token in _PLACEHOLDERS:
         return out
+    # 排除含空格/换行/CJK/斜杠的碎片: 反引号里混入了 markdown 建议文本,
+    # 不是单个符号。真正的代码引用是紧凑的标识符形态。
+    if any(c.isspace() for c in token):
+        return out
+    if any(ord(c) > 0x2E7F for c in token):
+        return out
+    # 含 "/" 的是文件路径 (benchmarks/fixtures/webapp_py/utils/validators.py),
+    # 不是符号。路径里的每一段都会被裸标识符正则单独抽出来, 逐个列名字
+    # 追不上 (webapp_py 实测 14/14 次都是这一类)。
+    if "/" in token:
+        return out
     if token in _STOPWORDS or token in _COMMON_WORDS:
+        return out
+    if token in _PYTHON_KEYWORDS or token in _STDLIB_WORDS:
+        return out
+    if token.lower() in _ADVICE_WORDS:
+        return out
+    if token in _TYPING_WORDS:
+        return out
+    if token.startswith("@"):
+        return out
+    if _PROPOSED_NAME_RE.search(token):
         return out
     if _MODULE_NAME_RE.match(token):
         return out
@@ -235,10 +313,30 @@ def normalize_symbol(name):
     if not name:
         return ""
     name = name.strip()
+    # 文件路径不是符号
+    if "/" in name:
+        return ""
     # uid 形如 "module:qualname"; 取冒号后的部分
     if ":" in name:
         name = name.split(":", 1)[1]
     return name
+
+
+def _suffix(symbol):
+    """取 Class.method 的最后一段裸方法名; 非点分形态返回空串。
+
+    模块名 (utils.validators) 与 dunder (__init__) 不产生裸名:
+    前者展开出 validators 会凭空造出从未存在的符号, 后者裸说没有意义。
+    """
+    if "." not in symbol or _MODULE_NAME_RE.match(symbol):
+        return ""
+    tail = symbol.rsplit(".", 1)[1]
+    return "" if tail.startswith("__") else tail
+
+
+def _method_suffixes(symbols):
+    """集合版 _suffix, 丢弃空结果。"""
+    return {s for s in (_suffix(x) for x in symbols) if s}
 
 
 def normalize_symbols(names):
@@ -271,9 +369,17 @@ def compute_metrics(retrieved, claimed, retrieval_failed=False, known=None):
         claimed = extract_symbols(claimed, known=retrieved)
     retrieved = normalize_symbols(retrieved)
     claimed = normalize_symbols(claimed)
-    hallucinated = claimed - retrieved
-    grounded = claimed & retrieved
-    missed = retrieved - claimed
+
+    # 方法名对齐: 图里存 AuthService.login, 回答里常写裸名 login。
+    #
+    # 注意**不能**把裸名塞进 retrieved 集合本身 —— 那会放大 recall 的分母
+    # (模型从未被要求写出 login 之外的写法), 使 recall 系统性虚低。
+    # 正确做法是: 分母保持原始的 retrieved, 只在**匹配**时容忍裸名写法,
+    # 即"一个检索到的符号, 只要模型写了它或写了它的裸方法名, 就算被引用"。
+    acceptable = retrieved | _method_suffixes(retrieved)
+    hallucinated = claimed - acceptable
+    grounded = {r for r in retrieved if r in claimed or _suffix(r) in claimed}
+    missed = retrieved - grounded
 
     if retrieval_failed:
         hallucination_rate = None
