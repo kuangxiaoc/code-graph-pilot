@@ -342,3 +342,46 @@ class _FakeNode(dict):
 class _FakeRel:
     def __init__(self, type_):
         self.type = type_
+
+
+# --- 硬伤 #6: INHERITS / BELONGS_TO 建了从不查询 ---
+
+def test_hierarchy_queries_inherits_and_belongs_to(monkeypatch):
+    """hierarchy() 必须真的查 INHERITS 与 BELONGS_TO 边。
+
+    这两类边此前只写不查, 图能力浪费一半。改父类方法的影响面靠 CALLS
+    边永远算不出来 —— 必须走 INHERITS。
+    """
+    store = _store_with(monkeypatch, [
+        # 第 1 条: symbol() 定位
+        [{
+            "uid": "auth.service:AuthService", "name": "AuthService",
+            "module": "auth.service", "filepath": "/x/auth/service.py",
+            "lineno": 16, "labels": ["Class"], "calls": [], "called_by": [],
+        }],
+        # 第 2 条: hierarchy() 本体
+        [{
+            "uid": "auth.service:AuthService",
+            "ancestors": ["auth.service:BaseService"],
+            "subclasses": [],
+            "members": ["auth.service:AuthService.login",
+                        "auth.service:AuthService.refresh"],
+        }],
+    ])
+
+    result = store.hierarchy("AuthService")
+    assert result["uid"] == "auth.service:AuthService"
+    assert result["ancestors"] == ["auth.service:BaseService"]
+    assert result["members"] == ["auth.service:AuthService.login",
+                                 "auth.service:AuthService.refresh"]
+
+    hier_query = store._driver.queries[1][0]
+    assert "INHERITS" in hier_query
+    assert "BELONGS_TO" in hier_query
+
+
+def test_hierarchy_propagates_symbol_error(monkeypatch):
+    """目标不存在时原样返回 symbol() 的错误, 不另造一套错误文案。"""
+    store = _store_with(monkeypatch, [])
+    result = store.hierarchy("nonexistent")
+    assert result.get("error")

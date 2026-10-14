@@ -38,6 +38,16 @@ class GraphStore(Protocol):
         """双向影响分析: 上游调用者 (传递闭包) + 下游依赖。"""
         ...
 
+    def hierarchy(self, name: str) -> dict:
+        """类继承与成员关系 (INHERITS / BELONGS_TO)。
+
+        这两类边一直被写入但从未被查询 (原硬伤 #6)。它们的语义与 CALLS
+        不同: CALLS 是"运行时依赖", INHERITS 是"类型层级",
+        BELONGS_TO 是"结构归属"。改一个父类方法的影响面必须靠 INHERITS
+        才能算全 —— 只用 CALLS 会漏掉所有子类。
+        """
+        ...
+
     def subgraph(self, limit: int = 100) -> dict:
         """可视化用的节点/边抽样。"""
         ...
@@ -151,6 +161,46 @@ class Neo4jGraphStore:
             "filepath": symbol["filepath"],
             "upstream": upstream,
             "downstream": symbol["calls"],
+        }
+
+    def hierarchy(self, name):
+        """返回该类的父类链、子类与方法列表。
+
+        父类链沿 INHERITS 向上走传递闭包 (多层继承要能看全);
+        方法列表取 BELONGS_TO 反向边。
+        """
+        symbol = self.symbol(name)
+        if symbol.get("error"):
+            return symbol
+        uid = symbol["uid"]
+
+        query = """
+        MATCH (target) WHERE target.uid = $uid
+        OPTIONAL MATCH path = (target)-[:INHERITS*1..10]->(ancestor)
+        OPTIONAL MATCH (child)-[:INHERITS*1..10]->(target)
+        OPTIONAL MATCH (member)-[:BELONGS_TO]->(target)
+        RETURN
+            target.uid AS uid,
+            [n IN nodes(path) WHERE n.uid <> $uid | n.uid] AS ancestors,
+            collect(DISTINCT child.uid) AS subclasses,
+            collect(DISTINCT member.uid) AS members
+        """
+        try:
+            records = self._driver.execute_query(query, uid=uid).records
+        except Exception as exc:
+            return {"error": f"数据库连接错误: {exc}"}
+
+        if not records:
+            return {"error": f"⚠️ 在知识图谱中未找到符号 '{name}'。"}
+
+        rec = records[0]
+        return {
+            "uid": rec["uid"],
+            "labels": symbol["labels"],
+            "module": symbol["module"],
+            "ancestors": [a for a in (rec["ancestors"] or []) if a],
+            "subclasses": [c for c in (rec["subclasses"] or []) if c],
+            "members": sorted(m for m in (rec["members"] or []) if m),
         }
 
     def subgraph(self, limit=100):

@@ -9,6 +9,7 @@
     uv run python -m codegraph build benchmarks/fixtures/webapp_py
     uv run python -m codegraph symbol validate_token --json
     uv run python -m codegraph impact validate_token --depth 3
+    uv run python -m codegraph hierarchy AuthService
     uv run python -m codegraph analyze "修改 validate_token 会影响谁"
     uv run python -m codegraph report
     uv run python -m codegraph validate
@@ -147,6 +148,31 @@ def cmd_impact(args):
     return 0
 
 
+def cmd_hierarchy(args):
+    from graph_store import get_store
+
+    result = get_store().hierarchy(args.name)
+    if result.get("error"):
+        return _fail(result["error"])
+
+    lines = [f"{result['uid']}  ({', '.join(result['labels'])})", ""]
+    lines.append(f"父类链 (INHERITS): {', '.join(result['ancestors']) or '无'}")
+    lines.append(f"子类 (INHERITS):   {', '.join(result['subclasses']) or '无'}")
+    lines.append("成员 (BELONGS_TO):")
+    if result["members"]:
+        for m in result["members"]:
+            lines.append(f"  {m}")
+    else:
+        lines.append("  无")
+    # 继承来的方法: 父类的成员也是本类可调用的, 改父类要算进影响面
+    if result["ancestors"]:
+        lines += ["", "提示: 修改父类的成员方法会影响本类, "
+                      "这部分影响面 CALLS 边覆盖不到。"]
+
+    _emit(result, args.json, lines)
+    return 0
+
+
 def cmd_analyze(args):
     import agent
 
@@ -248,6 +274,9 @@ def main(argv=None):
     p_impact = _add("impact", "传递闭包影响分析", cmd_impact)
     p_impact.add_argument("name", help="符号名或 module:qualname")
     p_impact.add_argument("--depth", type=int, default=5, help="上游传递深度 (默认 5)")
+
+    p_hier = _add("hierarchy", "类继承与成员关系 (INHERITS / BELONGS_TO)", cmd_hierarchy)
+    p_hier.add_argument("name", help="类名或 module:qualname")
 
     p_analyze = _add("analyze", "跑完整 Agent 工作流 (需要 LLM Key)", cmd_analyze)
     p_analyze.add_argument("query", help="自然语言问题")
