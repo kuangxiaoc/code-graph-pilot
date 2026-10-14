@@ -12,6 +12,8 @@ env/
 
 # Python cache and compiled files
 __pycache__/
+# 增量构建的解析结果缓存 (含 pickle blob, 勿提交)
+.codegraph_cache/
 *.py[cod]
 *$py.class
 *.so
