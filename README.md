@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-202%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -232,7 +232,7 @@ uv run python -m codegraph mcp
 | fixture macro recall | **1.000** | 12 个计分场景, 全部满分 (2026-10-14 起) |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
 | fixture 图规模 | 26 符号 / 71 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **202 passed** | 全离线: 不调 LLM, 不联网 |
+| 单元测试 | **209 passed** | 全离线: 不调 LLM, 不联网 |
 | 本体违规 | **0** / 244 triples | 见上 |
 
 ```bash
@@ -303,7 +303,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 202 个测试, 全离线
+tests/                # 209 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
@@ -323,8 +323,13 @@ CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
 
 ## Roadmap
 
-**未做 (按优先级):**
-- [ ] 单文件级 dirty 检测: 当前增量仍需全量解析该目录 (跨文件解析的固有依赖), 加文件 hash 缓存才能只重解析变更文件
+**未做:** 无。
+
+**已完成 (本轮):**
+- [x] MCP 入口 (见上)
+- [x] 文件 hash 缓存: `--cache` 只重解析变更文件。**默认关闭** ——
+      实测 300 文件解析约 25ms、hash 约 4ms, 小仓库上净亏损,
+      只在"文件多、改动少"时才划算。收益未经验证就不进默认路径。
 
 **明确不做 (YAGNI):**
 - 多语言 (Java/Go): 需引入 tree-sitter, 与当前目标正交
