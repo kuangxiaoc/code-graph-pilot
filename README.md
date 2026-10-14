@@ -71,8 +71,19 @@ graph TD
 `graph_store.Neo4jGraphStore` 提供结构化查询:
 - `symbol(name)` — 定位唯一符号, 返回直接上下游 (失败时返回结构化 `error`, 不抛异常)
 - `impact(name, depth)` — **上游传递闭包** (改这个函数最终会影响谁) + 直接下游
+- `hierarchy(name)` — 父类链 (`INHERITS` 传递闭包) + 子类 + 类成员 (`BELONGS_TO`)
 
 上游用传递闭包是因为"影响面"必须传递; 下游只取直接依赖, 展开反而稀释重点。
+
+`hierarchy()` 覆盖的语义是 `CALLS` 补不上的: `CALLS` 是运行时依赖,
+`INHERITS` 是类型层级。改一个父类方法的影响面, 只用 `CALLS` 会漏掉所有子类。
+
+```bash
+uv run python -m codegraph hierarchy AuthService
+# auth.service:AuthService  (Class)
+# 父类链 (INHERITS): auth.service:BaseService
+# 成员 (BELONGS_TO): AuthService.login, AuthService.refresh
+```
 
 ### 3. 带自我审查的 Agent
 `parse → retrieve → generate → review` 四节点循环。审查不通过会重生成 (最多 1 次)。
