@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-137%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-148%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -26,7 +26,7 @@
 | **无向量检索 / 无混合检索** | 没有 Vector DB, 没有 embedding。README 早期版本写的"AST+Vector 混合检索"是**不实的**, 已删除。检索 100% 是 Cypher 结构遍历 |
 | **不支持 Java/Go** | 仅 Python, 基于标准库 `ast`。多语言需引入 tree-sitter, 未做 |
 | **跨文件调用不是全量解析** | 依赖 import 关系 + 名字匹配推断, **不是类型精确的符号解析**。`obj.method()` 会记到 `unresolved_calls` 而不伪造边 |
-| **增量更新未实现** | 每次入库执行 `DETACH DELETE` 全库重建。**仓库级 (>500 文件) 使用会很慢** |
+| **增量更新是批内增量** | `build <dir> --keep` 会先删本批文件的旧子图再写入 (源码里改名/删除的符号不会残留)。但**仍需全量解析该目录**才能解析跨文件调用 —— 单文件级 dirty 检测未做 |
 | **LLM 效果未在真实模型上验证** | Agent 的端到端质量依赖 LLM; 仓库内所有测试用假 LLM (见 [评测](#评测)) |
 
 ## 架构
@@ -185,7 +185,7 @@ uv run python -m codegraph report --json       # 机器可读
 | fixture macro recall | **0.945** | 12 个计分场景, 10 个满分, 1 个已知缺口 |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
 | fixture 图规模 | 26 符号 / 67 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **137 passed** | 全离线: 不调 LLM, 不联网 |
+| 单元测试 | **148 passed** | 全离线: 不调 LLM, 不联网 |
 | 本体违规 | **0** / 244 triples | 见上 |
 
 ```bash
@@ -212,7 +212,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 137 个测试, 全离线
+tests/                # 148 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
@@ -234,7 +234,7 @@ CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
 
 **未做 (按优先级):**
 - [ ] 真实仓库评测: 在 `psf/requests` 规模上测跨文件覆盖率, 公布残差
-- [ ] 增量更新: 按文件 hash 做 dirty 检测, 只重建变更文件的子图
+- [ ] 单文件级 dirty 检测: 当前增量仍需全量解析该目录 (跨文件解析的固有依赖), 加文件 hash 缓存才能只重解析变更文件
 - [ ] MCP 入口: 让编排能力可被外部 agent 调用 (CLI 已交付; MCP 的触发条件见 `docs/specs/SPEC-delivery-surface.md`)
 - [ ] 局部变量类型推断: 提升 `repo.save()` 这类调用的解析率
 

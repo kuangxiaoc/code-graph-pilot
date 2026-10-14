@@ -105,3 +105,127 @@ def test_loader_rejects_illegal_label():
     entities = [{"type": "NotALabel", "uid": "x", "name": "x"}]
     with pytest.raises(ValueError, match="NotALabel"):
         loader.load_data(entities, [])
+
+
+# --- 增量更新 (硬伤 #5) ---
+# 全部离线: 用假 driver 拦截 Cypher, 不连 Neo4j。
+
+def _fake_loader(monkeypatch, run_log):
+    """构造不连库的 GraphLoader, 记录每条执行的 Cypher。"""
+    from graph_builder import GraphLoader
+
+    loader = GraphLoader.__new__(GraphLoader)
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def run(self, query, **params):
+            run_log.append((query, params))
+            return _Consumed()
+
+    class _Driver:
+        def session(self):
+            return _Session()
+
+        def close(self):
+            pass
+
+    loader.driver = _Driver()
+    return loader
+
+
+class _Consumed:
+    def consume(self):
+        return self
+
+    def single(self):
+        return {"deleted": 1}
+
+
+def test_drop_modules_deletes_only_that_module_subgraph(monkeypatch):
+    """按 uid 前缀删除, 不得波及其他模块的同名符号 (硬伤 #3 的删除侧)。"""
+    from graph_builder import GraphLoader
+
+    log = []
+    loader = _fake_loader(monkeypatch, log)
+
+    loader.drop_modules(["pkg.caller"])
+
+    assert len(log) == 1
+    query, params = log[0]
+    # 删除条件必须同时覆盖 Module 节点自身与以 "module:" 开头的符号
+    assert params["uid"] == "pkg.caller"
+    assert params["prefix"] == "pkg.caller:"
+    assert "DETACH DELETE" in query
+    # 按 uid 前缀而不是按 name: 同名符号跨模块大量存在
+    assert "name" not in query
+
+
+def test_drop_modules_is_a_noop_for_empty_input(monkeypatch):
+    """空输入不得发查询 —— 无变更文件时不该打库。"""
+    from graph_builder import GraphLoader
+
+    log = []
+    loader = _fake_loader(monkeypatch, log)
+    assert loader.drop_modules([]) == 0
+    assert log == []
+
+
+def test_incremental_build_drops_stale_subgraph(monkeypatch, tmp_path):
+    """端到端复现硬伤 #5: 源码里改名后, --keep 不得留下幽灵节点与幽灵边。
+
+    这是实测过的那一幕: build -> 改名 -> build --keep, 旧符号及其 CALLS 边
+    曾残留在图里, 影响分析会报告一个已不存在的调用者。
+    """
+    import codegraph as cli
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "validators.py").write_text(
+        "def validate_token(t):\n    return bool(t)\n", encoding="utf-8"
+    )
+    (tmp_path / "pkg" / "caller.py").write_text(
+        "from pkg.validators import validate_token\n\n\ndef entry():\n"
+        "    return validate_token('x')\n",
+        encoding="utf-8",
+    )
+
+    operations = []
+
+    class _Loader:
+        def __init__(self, *a, **kw):
+            pass
+
+        def clean_db(self):
+            operations.append("clean_db")
+
+        def drop_modules(self, modules):
+            operations.append(("drop_modules", tuple(sorted(modules))))
+
+        def load_data(self, entities, relations):
+            operations.append(("load_data", len(entities), len(relations)))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("graph_builder.GraphLoader", _Loader)
+
+    # 首次 build: 全库重建
+    assert cli.main(["build", str(tmp_path), "--json"]) == 0
+    assert operations[0] == "clean_db"
+
+    # 改名后增量 build: 必须先删旧子图再写新数据
+    (tmp_path / "pkg" / "caller.py").write_text(
+        "from pkg.validators import validate_token\n\n\ndef renamed_entry():\n"
+        "    return validate_token('x')\n",
+        encoding="utf-8",
+    )
+    operations.clear()
+    assert cli.main(["build", str(tmp_path), "--keep", "--json"]) == 0
+
+    assert operations[0] == ("drop_modules", ("pkg.caller", "pkg.validators"))
+    # 顺序很重要: 先删后写, 否则 MERGE 会把幽灵节点留下来
+    assert operations[1][0] == "load_data"

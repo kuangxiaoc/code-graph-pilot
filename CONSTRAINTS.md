@@ -34,7 +34,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 
 | 指标 | 当前值 | 方向 |
 |---|---|---|
-| 单元测试数 | 137 (2026-10-14, CLI 落地后) | 只增不减 |
+| 单元测试数 | 148 (2026-10-14, 测试全离线后) | 只增不减 |
 | fixture macro recall | 0.945 (12 计分场景) | 只增不减 |
 | fixture 悬空边 | 0 | 保持 0 |
 | 本体违规数 | 0 (244 triples) | 保持 0 |
@@ -65,6 +65,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 - 未选择需要运行中 URL 的维度 (Lighthouse/axe) —— 本项目无页面可测,
   该技能明确说这种情况应"说明并放弃该维度"而非发明一个跑不起来的检查
 
-待人工复核的点: 90 秒检查预算已超 (当前 `pytest tests/` 约 126 秒)。
-超支主因是 `test_agent_graph.py` 的 live_db 用例每次重建 fixture 图 + 连接重试,
-而非测试数量。若要恢复预算, 方向是抽 session 级 fixture, 不是删测试。
+待人工复核的点: 90 秒检查预算 (当前 `pytest tests/` 约 35 秒, 已回到预算内)。
+此前超支到 126 秒的原因是 live_db / live_store 用例真的连本地 Neo4j, 且连不上时
+驱动的指数退避重试占了大头。已按 AGENTS.md「测试必须离线」改为假 store / 假 driver,
+覆盖的分支没有减少 (137 -> 148 个测试)。

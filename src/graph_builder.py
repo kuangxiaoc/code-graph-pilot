@@ -408,6 +408,39 @@ class GraphLoader:
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n").consume()
 
+    def drop_modules(self, module_uids):
+        """删除指定 Module 及其定义的符号子图, 返回删除的节点数。
+
+        这是增量更新的关键一步: 只靠 MERGE 写入无法表达"源码里这个函数
+        已经没了", 重命名会在图里留下幽灵节点和幽灵 CALLS 边
+        (实测证据见 docs/specs/SPEC-incremental.md)。
+
+        按 uid 前缀删除而不是按 name: 同名符号跨模块大量存在,
+        按 name 删会误删别的模块的符号。
+        """
+        uids = list(module_uids)
+        if not uids:
+            return 0
+
+        deleted = 0
+        with self.driver.session() as session:
+            for uid in uids:
+                # uid 形如 "module:qualname"; 属于本模块的符号必然以
+                # "module:" 开头, Module 节点自身 uid 就是 "module"。
+                prefix = uid + ":"
+                result = session.run(
+                    """
+                    MATCH (n)
+                    WHERE n.uid = $uid OR n.uid STARTS WITH $prefix
+                    DETACH DELETE n
+                    RETURN count(n) AS deleted
+                    """,
+                    uid=uid,
+                    prefix=prefix,
+                ).single()
+                deleted += result["deleted"] if result else 0
+        return deleted
+
     def load_data(self, entities, relations):
         # 先校验再连库: 非法 label / 悬空边必须在写库前暴露
         known = set()

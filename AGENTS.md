@@ -7,13 +7,17 @@
 ```
 src/
   graph_builder.py   # ast.NodeVisitor 解析器 + GraphLoader (Neo4j 写入)
+  graph_store.py     # Cypher 收口 + 进程级驱动复用 + GraphStore 协议
   agent.py           # LangGraph 状态机: parse -> retrieve -> generate -> review
+  codegraph.py       # CLI 入口: build / symbol / impact / analyze / report / validate
   app.py             # Streamlit UI (侧边栏入库 / 对话分析 / 图谱可视化)
+  observability/     # 轨迹埋点 + 幻觉率指标 + 报告
+  ontology/          # RDFS/OWL schema + 约束校验
 test_code.py         # 演示样本: 4 个互相调用的函数, 供手动入库试用
 assets/              # README 截图
 benchmarks/          # 评测: fixture + 人工 ground truth + 打分 runner
-ontology/            # RDFS/OWL schema + SHACL 约束校验
 docs/specs/          # 能力地图与各模块 spec
+docs/decisions/      # ADR
 docs/knowledge/      # 领域调研与评测方法笔记
 docker-compose.yml   # Neo4j 容器 (7474 HTTP / 7687 bolt)
 pyproject.toml       # uv 依赖声明
@@ -29,8 +33,9 @@ CONSTRAINTS.md       # 质量契约, 含可执行阈值
 ```bash
 docker-compose up -d          # 启动 Neo4j (neo4j / password123)
 uv sync                        # 安装依赖 (Python 3.10, 见 .python-version)
-uv run pytest tests/ -q        # 跑测试 (离线, 约 60 秒)
+uv run pytest tests/ -q        # 跑测试 (全离线, 约 35 秒)
 uv run python benchmarks/runner.py   # 跑评测, 打印 recall 表格
+uv run python -m codegraph symbol validate_token   # 查符号 (不连 LLM)
 uv run streamlit run src/app.py   # 启动前端
 ```
 

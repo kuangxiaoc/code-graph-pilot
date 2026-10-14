@@ -219,7 +219,11 @@ def resolve_target_symbol(query):
         if not record.get("error"):
             return candidate, record
 
-    return candidates[0], last
+    # 全部未命中: 目标置空而不是退回 candidates[0]。
+    # candidates[0] 可能是 "modify" 这类普通英文词 (第 4 级候选的固有代价),
+    # 拿它当目标会让 retrieve 节点带着一个语义上无意义的符号去查图,
+    # 并且污染轨迹的 target_func 字段。
+    return "", last
 
 
 def target_candidates(query):

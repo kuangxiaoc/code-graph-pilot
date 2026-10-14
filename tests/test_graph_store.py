@@ -107,73 +107,238 @@ def test_retrieval_failed_when_store_returns_error(monkeypatch):
 
 
 # --- 查询正确性: label 限定 (硬伤 #3) ---
-
-@pytest.fixture
-def live_store():
-    """指向本地 Neo4j 并灌入 fixture 图; 不可达时跳过。"""
-    fixture = Path(__file__).resolve().parents[1] / "benchmarks" / "fixtures" / "webapp_py"
-    try:
-        from graph_builder import CodeAnalyzer, GraphLoader, module_name_for_path, resolve_graph
-
-        analyzers = [
-            CodeAnalyzer(str(fp), module=module_name_for_path(fp, fixture))
-            for fp in sorted(fixture.rglob("*.py"))
-        ]
-        entities, relations = resolve_graph(analyzers)
-        loader = GraphLoader("bolt://localhost:7687", "neo4j", "password123")
-        loader.clean_db()
-        loader.load_data(entities, relations)
-        loader.close()
-        return gs.Neo4jGraphStore("bolt://localhost:7687", "neo4j", "password123")
-    except Exception as exc:  # pragma: no cover - 无数据库环境
-        pytest.skip(f"Neo4j 不可用: {exc}")
+# 全部用假 driver 拦截 execute_query, 不连 Neo4j —— 见 tests/conftest.py 的
+# FakeDriver。理由: AGENTS.md 要求所有测试离线, 且连库测试使整套测试从
+# 约 3 秒涨到 149 秒 (连接重试的指数退避是主因)。
 
 
-def test_symbol_query_is_label_scoped(live_store):
+def _store_with(monkeypatch, records):
+    """构造一个 execute_query 返回给定 records 的 store。"""
+    store = gs.Neo4jGraphStore.__new__(gs.Neo4jGraphStore)
+    store.uri = "bolt://fake"
+    store.user = store.password = "x"
+    store._driver = _FakeDriver(records)
+    return store
+
+
+class _FakeDriver:
+    """按调用次序返回 records; 传单个列表则每次都返回它。
+
+    impact() 会发两条查询 (symbol 定位 + 变长路径), 二者期望数据不同,
+    因此支持传 [[symbol 记录], [上游记录]] 形式按次序取。
+    """
+
+    def __init__(self, records):
+        self.records = records
+        self.queries = []
+
+    def _records_for(self, index):
+        if self.records and isinstance(self.records[0], list):
+            seq = self.records[min(index, len(self.records) - 1)]
+            return seq
+        return self.records
+
+    def execute_query(self, query, **params):
+        self.queries.append((query, params))
+        return _FakeResult(self._records_for(len(self.queries) - 1))
+
+    def close(self):
+        pass
+
+
+class _FakeResult:
+    def __init__(self, records):
+        self.records = records
+
+
+class _FakeRecord(dict):
+    """模拟 neo4j Record: 支持 r["uid"] 与 r.uid 两种访问。"""
+
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError as exc:
+            raise AttributeError(item) from exc
+
+
+def _rec(**kw):
+    return _FakeRecord(kw)
+
+
+def test_symbol_query_is_label_scoped(monkeypatch):
     """同名 Class/Function 不得互相串 (硬伤 #3)。
 
-    fixture 里有 auth.service:AuthService (Class) 与
-    utils.validators:validate_token (Function) 等, 用裸名 'login' 查询
-    必须解析到方法, 而不是任意一个 name 相同的实体。
+    查询必须带 label 白名单 (Function|Method|Class), 否则
+    MATCH (n {name: $name}) 会让 :Class 与 :Function 同名实体互相串。
     """
-    record = live_store.symbol("validate_token")
+    store = _store_with(monkeypatch, [
+        _rec(uid="utils.validators:validate_token", name="validate_token",
+             module="utils.validators", filepath="/x/v.py", lineno=8,
+             labels=["Function"], calls=[], called_by=["auth.tokens:refresh_token"]),
+    ])
+    record = store.symbol("validate_token")
     assert not record.get("error")
     assert record["uid"] == "utils.validators:validate_token"
-    assert "Function" in record["labels"]
+    assert record["labels"] == ["Function"]
+
+    # 关键断言: 查询里必须限定 label
+    query = store._driver.queries[0][0]
+    assert "Function|Method|Class" in query
+    # 且不得出现跨 label 的宽松匹配
+    assert "MATCH (target)" in query and "target:" in query
 
 
-def test_symbol_query_returns_structured_error_when_missing(live_store):
-    record = live_store.symbol("nonexistent_symbol_xyz")
+def test_symbol_query_reports_multiple_matches(monkeypatch):
+    """多个匹配必须报错而不是任选一个 —— 猜一个就是假确定性。"""
+    store = _store_with(monkeypatch, [
+        _rec(uid="a:f", name="f", module="a", filepath=None, lineno=None,
+             labels=["Function"], calls=[], called_by=[]),
+        _rec(uid="b:f", name="f", module="b", filepath=None, lineno=None,
+             labels=["Function"], calls=[], called_by=[]),
+    ])
+    record = store.symbol("f")
+    assert "匹配到多个实体" in record["error"]
+    assert "uid" not in record
+
+
+def test_symbol_query_returns_structured_error_when_missing(monkeypatch):
+    store = _store_with(monkeypatch, [])
+    record = store.symbol("nonexistent_symbol_xyz")
     assert record.get("error")
     assert "uid" not in record
 
 
-def test_impact_returns_transitive_upstream(live_store):
-    """上游必须是传递闭包: validate_token 的调用者的调用者也要在。"""
-    result = live_store.impact("validate_token")
+def test_symbol_filters_none_from_collect(monkeypatch):
+    """Cypher collect() 无匹配时返回 [None], 不得进 retrieved 集合。"""
+    store = _store_with(monkeypatch, [
+        _rec(uid="a:f", name="f", module="a", filepath=None, lineno=None,
+             labels=["Function"], calls=[None], called_by=[None]),
+    ])
+    record = store.symbol("f")
+    assert record["calls"] == []
+    assert record["called_by"] == []
+
+
+def test_symbol_handles_connection_failure(monkeypatch):
+    """连接失败必须转为结构化 error, 不得抛异常打断工作流。"""
+
+    class _Boom:
+        def execute_query(self, *a, **kw):
+            raise RuntimeError("connection refused")
+
+    store = gs.Neo4jGraphStore.__new__(gs.Neo4jGraphStore)
+    store._driver = _Boom()
+    record = store.symbol("f")
+    assert "数据库连接错误" in record["error"]
+
+
+def test_impact_returns_transitive_upstream_with_distance(monkeypatch):
+    """上游必须是传递闭包, 且带距离 (排序后才能看出风险梯度)。"""
+    store = _store_with(monkeypatch, [
+        [_rec(uid="a:f", name="f", module="a", filepath=None, lineno=None,
+              labels=["Function"], calls=["g"], called_by=["b"])],
+        [_rec(uid="b", distance=1), _rec(uid="c", distance=2)],
+    ])
+    result = store.impact("f")
+
     assert not result.get("error")
-    uids = [u["uid"] for u in result["upstream"]]
-    assert "auth.tokens:refresh_token" in uids
-    # 距离排序: 直接调用者距离最小
-    distances = [u["distance"] for u in result["upstream"]]
-    assert distances == sorted(distances)
+    assert [u["uid"] for u in result["upstream"]] == ["b", "c"]
+    assert [u["distance"] for u in result["upstream"]] == [1, 2]
+
+    # 变长路径查询必须用 WHERE 定位起点 —— Neo4j 不允许参数出现在 MATCH 模式。
+    # queries[0] 是 symbol() 的定位查询, 变长路径在 queries[1]。
+    assert len(store._driver.queries) == 2
+    path_query = store._driver.queries[1][0]
+    assert "CALLS*1.." in path_query
+    assert "WHERE start.uid = $uid" in path_query
 
 
-def test_impact_reports_error_for_missing_symbol(live_store):
-    assert live_store.impact("nonexistent_symbol_xyz").get("error")
+def test_impact_depth_is_interpolated_not_parameterized(monkeypatch):
+    """深度必须白名单化后拼接: Cypher 的变长路径上界不接受参数。"""
+    store = _store_with(monkeypatch, [
+        [_rec(uid="a:f", name="f", module="a", filepath=None, lineno=None,
+              labels=["Function"], calls=[], called_by=[])],
+        [],  # 变长路径无上游
+    ])
+    store.impact("f", depth=3)
+    assert "CALLS*1..3" in store._driver.queries[1][0]
 
 
-def test_subgraph_returns_nodes_and_edges(live_store):
-    data = live_store.subgraph(limit=20)
-    assert data["nodes"], "fixture 图非空, 不应返回 0 节点"
-    assert data["edges"]
-    for node in data["nodes"]:
-        assert node["uid"], "可视化节点键必须是 uid (name 跨模块不唯一)"
+def test_impact_reports_error_for_missing_symbol(monkeypatch):
+    store = _store_with(monkeypatch, [])
+    assert store.impact("nonexistent_symbol_xyz").get("error")
 
 
-def test_subgraph_handles_unreachable_db(monkeypatch):
-    store = gs.Neo4jGraphStore("bolt://127.0.0.1:1", "x", "x")
+def test_impact_propagates_symbol_error(monkeypatch):
+    """上游查询失败时错误必须冒泡, 而不是返回半份数据。"""
+
+    class _Boom:
+        def __init__(self):
+            self.calls = 0
+
+        def execute_query(self, *a, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                return _FakeResult([_rec(uid="a:f", name="f", module="a",
+                                         filepath=None, lineno=None,
+                                         labels=["Function"], calls=[], called_by=[])])
+            raise RuntimeError("boom")
+
+    store = gs.Neo4jGraphStore.__new__(gs.Neo4jGraphStore)
+    store._driver = _Boom()
+    assert "数据库连接错误" in store.impact("f")["error"]
+
+
+def test_subgraph_returns_nodes_and_edges(monkeypatch):
+    """可视化节点键必须是 uid: name 跨模块不唯一 (硬伤 #3 的可视化侧)。"""
+    store = _store_with(monkeypatch, [])
+    store._driver.records = [
+        (_FakeRecord({"n": _FakeNode("a:f", "f", "a"),
+                      "r": _FakeRel("CALLS"),
+                      "m": _FakeNode("b:g", "g", "b")})),
+    ]
+    data = store.subgraph(limit=20)
+    assert [n["uid"] for n in data["nodes"]] == ["a:f", "b:g"]
+    assert data["edges"] == [{"src": "a:f", "rel": "CALLS", "dst": "b:g"}]
+
+
+def test_subgraph_deduplicates_nodes(monkeypatch):
+    """同一节点在多条边里出现时只入队一次。"""
+    store = _store_with(monkeypatch, [])
+    store._driver.records = [
+        _FakeRecord({"n": _FakeNode("a:f", "f", "a"), "r": _FakeRel("CALLS"),
+                     "m": _FakeNode("b:g", "g", "b")}),
+        _FakeRecord({"n": _FakeNode("b:g", "g", "b"), "r": _FakeRel("CALLS"),
+                     "m": _FakeNode("c:h", "h", "c")}),
+    ]
+    data = store.subgraph(limit=20)
+    assert len(data["nodes"]) == 3
+    assert len(data["edges"]) == 2
+
+
+def test_subgraph_handles_unreachable_db():
+    """连不上库时返回空图 + error, 不得让 UI 崩。"""
+
+    class _Boom:
+        def execute_query(self, *a, **kw):
+            raise RuntimeError("refused")
+
+    store = gs.Neo4jGraphStore.__new__(gs.Neo4jGraphStore)
+    store._driver = _Boom()
     data = store.subgraph(limit=5)
     assert data["nodes"] == []
     assert data.get("error")
-    store.close()
+
+
+class _FakeNode(dict):
+    def __init__(self, uid, name, module):
+        super().__init__(uid=uid, name=name, module=module, filepath=None, lineno=None)
+        self.labels = ["Function"]
+
+    def get(self, k, default=None):
+        return dict.get(self, k, default)
+
+
+class _FakeRel:
+    def __init__(self, type_):
+        self.type = type_

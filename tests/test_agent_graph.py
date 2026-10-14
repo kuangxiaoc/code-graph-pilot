@@ -123,11 +123,13 @@ class _FakeLLM:
 
 @pytest.fixture
 def live_db(monkeypatch):
-    """指向本地 Neo4j 并灌入 fixture 图, 使断言不依赖库里残留数据。
+    """假 store 模拟"图检索成功", 不连 Neo4j。
 
-    必须 reset_store(): graph_store 的驱动是进程级单例, 前一个用例
-    (dead_db) 可能已经把指向 127.0.0.1:1 的驱动缓存下来, 直接复用会让
-    "连本地库" 的用例静默失败。实测踩过: 单跑全绿, 整套跑 3 个失败。
+    AGENTS.md 要求所有测试离线 (不连 Neo4j)。此前这里真的连本地库并灌
+    fixture 图, 代价是整套测试从约 3 秒涨到 149 秒 —— 连不上时 neo4j 驱动
+    的指数退避重试是主因。改成假 store 后同样覆盖全部工作流分支。
+
+    名字保留 live_db: 它表达的是"检索成功"这个语义, 与 dead_db 相对。
     """
     import graph_store as gs
 
@@ -135,42 +137,53 @@ def live_db(monkeypatch):
     monkeypatch.setenv("NEO4J_USER", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", "password123")
     gs.reset_store()
-    _seed_fixture_graph()
-    return os.getenv("NEO4J_URI")
+
+    store = _FakeStore({
+        "uid": "utils.validators:validate_token",
+        "name": "validate_token",
+        "module": "utils.validators",
+        "filepath": "/x/utils/validators.py",
+        "lineno": 8,
+        "labels": ["Function"],
+        "calls": [],
+        "called_by": ["auth.tokens:refresh_token", "auth.middleware:authenticate"],
+    })
+    monkeypatch.setattr(gs, "get_store", lambda: store)
+    return store
 
 
-def _seed_fixture_graph():
-    """把 benchmarks/fixtures/webapp_py 写入 Neo4j; 库不可达时静默跳过。
+class _FakeStore:
+    """最小假 store: 只有 symbol() 会被 agent 的检索节点调用。"""
 
-    静默跳过是故意的: 无数据库环境下相关用例转为"检索失败"路径,
-    由 test_db_unreachable_is_not_reported_as_hallucination 守护口径,
-    而不是让整个文件崩掉。
-    """
-    try:
-        from graph_builder import CodeAnalyzer, GraphLoader, module_name_for_path, resolve_graph
+    def __init__(self, record):
+        self.record = record
+        self.calls = []
 
-        fixture = Path(__file__).resolve().parents[1] / "benchmarks" / "fixtures" / "webapp_py"
-        analyzers = [
-            CodeAnalyzer(str(fp), module=module_name_for_path(fp, fixture))
-            for fp in sorted(fixture.rglob("*.py"))
-        ]
-        entities, relations = resolve_graph(analyzers)
-        loader = GraphLoader("bolt://localhost:7687", "neo4j", "password123")
-        loader.clean_db()
-        loader.load_data(entities, relations)
-        loader.close()
-    except Exception:
+    def symbol(self, name):
+        self.calls.append(name)
+        # 只认 validate_token: 其他名字报"未找到", 这样"跳过不在图中的候选"
+        # 这个行为才可测 (对任何名字都返回成功的话测不出跳过逻辑)。
+        if name == "validate_token":
+            return dict(self.record)
+        return {"error": f"⚠️ 在知识图谱中未找到符号 '{name}'。"}
+
+    def close(self):
         pass
 
 
 @pytest.fixture
 def dead_db(monkeypatch):
+    """假 store 模拟"检索失败": 必须与 live_db 严格区分。"""
     import graph_store as gs
 
     monkeypatch.setenv("NEO4J_URI", "bolt://127.0.0.1:1")
     monkeypatch.setenv("NEO4J_USER", "x")
     monkeypatch.setenv("NEO4J_PASSWORD", "x")
     gs.reset_store()
+
+    store = _FakeStore({"error": "数据库连接错误: 连接被拒绝"})
+    monkeypatch.setattr(gs, "get_store", lambda: store)
+    return store
 
 
 def _install_fake_llm(monkeypatch, responses):
@@ -289,12 +302,44 @@ def test_target_candidates_are_ordered_by_informativeness():
 
 
 def test_resolve_target_verifies_against_graph(live_db):
-    """候选必须经过图校验: 普通英文词不得被当成目标。"""
+    """候选必须经过图校验: 普通英文词不得被当成目标。
+
+    live_db 只认 validate_token; 查询 "修改 login 会影响谁" 时 login
+    不在图里, 必须退回到能命中的候选而不是硬用 login。
+    """
     from agent import resolve_target_symbol
 
     target, record = resolve_target_symbol("修改 validate_token 会影响谁")
     assert target == "validate_token"
     assert record.get("uid") == "utils.validators:validate_token"
+    assert "validate_token" in live_db.calls
+
+
+def test_resolve_target_skips_candidates_not_in_graph(live_db):
+    """图里没有的候选必须被跳过, 否则检索必然落空 (硬伤 #1 的复发形态)。
+
+    场景: 问题里只有一个符号 login, 而图中不存在它。正确行为是**全部
+    候选未命中 -> 目标置空**, 而不是硬拿 login 当目标 (那正是硬伤 #1 的
+    原始形态: 拿一个不是符号的词去查图)。
+    """
+    from agent import resolve_target_symbol
+
+    target, record = resolve_target_symbol("修改 login 会影响谁")
+    assert target == ""
+    assert record.get("error")
+    # 候选确实被拿去查过图, 不是直接放弃
+    assert "login" in live_db.calls
+
+
+def test_resolve_target_prefers_hit_over_later_candidate(live_db):
+    """多个候选中, 排在前面但图里没有的要被跳过。"""
+    from agent import resolve_target_symbol
+
+    # validate_token 是 snake_case (信息量高, 排第一) 且图中存在;
+    # login 是裸小写词, 排在其后。
+    target, record = resolve_target_symbol("modify validate_token and login")
+    assert target == "validate_token"
+    assert record["uid"] == "utils.validators:validate_token"
 
 
 def test_resolve_target_reports_when_nothing_matches(dead_db):

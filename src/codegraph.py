@@ -74,9 +74,18 @@ def cmd_build(args):
         return _fail("没有文件解析成功")
 
     entities, relations = resolve_graph(analyzers)
+
+    # --keep 走增量: 先删本批文件的旧子图, 再写入新解析结果。
+    # 少了删除这一步, 源码里重命名/删除的符号会残留在图里 (含 CALLS 边),
+    # 影响分析会报告已不存在的调用者 —— 比全库重建更糟, 因为它看起来是增量的。
+    modules = sorted({a.module for a in analyzers})
     try:
         loader = GraphLoader()
-        if not args.keep:
+        if args.keep:
+            dropped = loader.drop_modules(modules)
+            print(f"增量模式: 删除 {len(modules)} 个模块的旧子图 ({dropped} 节点)",
+                  file=sys.stderr)
+        else:
             loader.clean_db()
         loader.load_data(entities, relations)
         loader.close()
@@ -88,6 +97,8 @@ def cmd_build(args):
         "skipped": skipped,
         "entities": len(entities),
         "relations": len(relations),
+        "incremental": bool(args.keep),
+        "modules": modules,
     }
     _emit(
         result,
@@ -227,8 +238,9 @@ def main(argv=None):
     p_build = _add("build", "解析目录并写入 Neo4j", cmd_build)
     p_build.add_argument("path", help="Python 目录或单文件")
     p_build.add_argument("--keep", action="store_true",
-                         help="不清空原图, 增量追加 (注意: 尚无增量删除, "
-                              "重复 build 同目录会产生重复关系)")
+                         help="增量模式: 先删除本批文件的旧子图再写入。"
+                              "注意只清理本次传入的文件; 其他文件指向"
+                              "已删除符号的边需一并重新 build 那些文件")
 
     p_symbol = _add("symbol", "定位符号并显示直接上下游", cmd_symbol)
     p_symbol.add_argument("name", help="符号名或 module:qualname")
