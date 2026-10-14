@@ -211,9 +211,59 @@ class CodeAnalyzer(ast.NodeVisitor):
         if parent_is_class:
             self._add_relation(uid, "BELONGS_TO", self._local_classes[self._scope[-1][1]])
 
+        # 参数类型标注也是可靠的类型来源: `def f(self, r: Response)` 之后
+        # `r.headers` / `r.content` 就能解析到真实符号。真实仓库 (requests)
+        # 里大量调用走的是参数而不是局部赋值 —— 只靠 visit_Assign 时
+        # 303 个 unresolved 里有相当一部分属于这一类。
+        self._register_param_types(uid, node)
+
         self._scope.append(("func", node.name))
         self.generic_visit(node)
         self._scope.pop()
+
+    def _register_param_types(self, func_uid, node):
+        """把带类型标注的参数记进变量类型表。
+
+        只认简单标注 (`r: Response`)。`X | None`、`Optional[X]`、
+        `list[str]` 这类复合标注不猜: 取其中一个分支会连错边, 而连错比
+        unresolved 更糟 (它会让影响分析指向错误的符号)。
+        """
+        args = node.args
+        pairs = list(getattr(args, "posonlyargs", []) or []) + list(args.args)
+        pairs += list(args.kwonlyargs or [])
+        for arg in pairs:
+            ann = arg.annotation
+            if ann is None:
+                continue
+            type_uid = self._annotation_to_uid(ann)
+            if type_uid is None:
+                continue
+            key = (func_uid, arg.arg)
+            # 局部赋值优先: 函数内 `r = something` 会覆盖标注
+            if key not in self._local_var_types:
+                self._local_var_types[key] = type_uid
+
+    def _annotation_to_uid(self, ann):
+        """标注 AST -> 类型 uid; 复合/无法确定的返回 None。"""
+        # `X | None` / `X | Y` (Python 3.10+): 不猜是哪个分支
+        if isinstance(ann, ast.BinOp):
+            return None
+        if isinstance(ann, ast.Name):
+            name = ann.id
+            if name in self._local_classes:
+                return self._local_classes[name]
+            if name in self._import_aliases:
+                src_module, orig = self._import_aliases[name]
+                return f"{src_module}:{orig or name}"
+            return None
+        # module.Class 形态
+        if isinstance(ann, ast.Attribute):
+            if isinstance(ann.value, ast.Name) and ann.value.id in self._import_aliases:
+                src_module, _ = self._import_aliases[ann.value.id]
+                return f"{src_module}:{ann.attr}"
+            return None
+        # 下标 (list[str] / Dict[K,V]) 与字符串标注 ("Response") 都不猜
+        return None
 
     def visit_FunctionDef(self, node):
         self._visit_function(node)
@@ -229,8 +279,28 @@ class CodeAnalyzer(ast.NodeVisitor):
             self._register_external_module(alias.name)
         self.generic_visit(node)
 
+    def _resolve_relative(self, level, module):
+        """把相对导入解析成绝对模块名。
+
+        `from .models import Response` 在 requests.auth 里实际是
+        requests.models。此前直接拼成 ".models", 于是所有经相对导入的
+        类型标注都连到了不存在的模块 —— 真实仓库里这是主要形态
+        (requests 内部全用相对导入)。
+        """
+        if not level:
+            return module or ""
+        parts = self.module.split(".")
+        # 当前文件是 __init__.py 时, 它本身就代表包 —— level=1 指向自身;
+        # 否则 level=1 指向父包。混淆这两种情形会让 requests/__init__.py
+        # 里的 `from .models import` 解析成 "models" 而非 "requests.models"。
+        is_package = (self.filepath or "").endswith("__init__.py")
+        up = level - 1 if is_package else level
+        prefix = parts[: len(parts) - up] if up < len(parts) else []
+        tail = module.split(".") if module else []
+        return ".".join([p for p in prefix if p] + tail)
+
     def visit_ImportFrom(self, node):
-        base = "." * node.level + (node.module or "")
+        base = self._resolve_relative(node.level, node.module)
         for alias in node.names:
             local = alias.asname or alias.name
             self._import_aliases[local] = (base, alias.name)
@@ -295,7 +365,19 @@ class CodeAnalyzer(ast.NodeVisitor):
                 return self._local_classes[func.id]
             if func.id in self._import_aliases:
                 src_module, orig = self._import_aliases[func.id]
-                return f"{src_module}:{orig or func.id}"
+                # 导入的是函数而非类 (cast / urlparse / get_logger) 时,
+                # 它不是类型。此前把 `cookie_jar = cast(...)` 记成
+                # 类型 typing:cast, 后续 cookie_jar.set_cookie() 会连到
+                # typing:cast.set_cookie 这种不存在的符号。
+                if orig and orig[0].isupper():
+                    return f"{src_module}:{orig}"
+                if not orig and func.id[0].isupper():
+                    # `from re import compile` 这种: 小写名是函数,
+                    # 调用结果是实例, 类型未知
+                    return None
+                # orig 为 None 表示 `import hashlib` —— func.id 是模块名,
+                # 调用 hashlib.sha256() 得到的是实例而非类, 类型未知。
+                return None
         elif isinstance(func, ast.Attribute):
             # module.Class() 形态
             if isinstance(func.value, ast.Name) and func.value.id in self._import_aliases:

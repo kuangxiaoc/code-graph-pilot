@@ -309,3 +309,74 @@ def test_cross_module_var_type_resolves_to_real_method():
     # audit 继承自 BaseService, 不得造出 AuthService.audit 桩
     assert not any(e["uid"] == "auth.service:AuthService.audit"
                    for e in entities)
+
+
+# --- 参数类型标注推断 (真实仓库评测驱动) ---
+#
+# requests 内部大量调用走参数而非局部赋值 (def f(self, r: Response)),
+# 且全用相对导入 (from .models import Response)。两处任一缺失都会让
+# 标注形同虚设 —— 实测只做 visit_Assign 时真实 CALLS 边只有 128 条,
+# 补上标注 + 相对导入后到 239 条。
+
+def test_relative_import_resolves_to_absolute_module():
+    """`from .models import Response` 必须解析成 pkg.models, 不是 ".models"。"""
+    a = CodeAnalyzer("from .models import Response\n\n"
+                     "def f(r: Response):\n    return r.json()\n",
+                     module="pkg.auth", filepath="pkg/auth.py")
+    b = CodeAnalyzer("class Response:\n    def json(self):\n        pass\n",
+                     module="pkg.models", filepath="pkg/models.py")
+    entities, relations = resolve_graph([a, b])
+    assert ("pkg.auth:f", "pkg.models:Response.json") in calls(relations)
+
+
+def test_relative_import_in_init_file_points_to_itself():
+    """__init__.py 里 level=1 指向自身包, 不是父包。"""
+    a = CodeAnalyzer("from .models import Response\n",
+                     module="pkg", filepath="pkg/__init__.py")
+    assert "Response" in a._import_aliases
+    assert a._import_aliases["Response"][0] == "pkg.models"
+
+
+def test_param_annotation_resolves_call():
+    """带类型标注的参数, 其方法调用必须解析到真实符号。"""
+    a = CodeAnalyzer(
+        "from mymod import Thing\n\n"
+        "def f(t: Thing):\n    return t.run()\n",
+        module="m",
+    )
+    b = CodeAnalyzer("class Thing:\n    def run(self):\n        pass\n",
+                     module="mymod")
+    entities, relations = resolve_graph([a, b])
+    assert ("m:f", "mymod:Thing.run") in calls(relations)
+
+
+def test_union_annotation_is_not_guessed():
+    """`X | None` 复合标注不得取任一分支 —— 连错比不连更糟。"""
+    a = CodeAnalyzer(
+        "from mymod import A, B\n\n"
+        "def f(t: A | B):\n    return t.run()\n",
+        module="m",
+    )
+    b = CodeAnalyzer("class A:\n    def run(self):\n        pass\n"
+                     "class B:\n    def run(self):\n        pass\n",
+                     module="mymod")
+    entities, relations = resolve_graph([a, b])
+    # A.run / B.run 都不该被连上: 无法判定 t 是哪一个
+    assert not any(r["rel"] == "CALLS" and r["dst"].endswith(".run")
+                   for r in relations)
+
+
+def test_function_result_is_not_treated_as_type():
+    """`cookie_jar = cast(...)` 不得把 cast 当成类型。"""
+    a = CodeAnalyzer(
+        "from typing import cast\nfrom mycookies import CookieJar\n\n"
+        "def f():\n    jar = cast(CookieJar, None)\n    jar.set_cookie()\n",
+        module="m",
+    )
+    entities, relations = resolve_graph([a])
+    # cast(...) 自身作为一次调用连到 typing:cast 是对的;
+    # 但不得把 cast 当成 jar 的类型, 进而造出 typing:cast.set_cookie
+    assert not any(r["dst"].endswith("cast.set_cookie")
+                   for r in relations if r["rel"] == "CALLS")
+    # jar 的类型未知, 因此 set_cookie 必须留在 unresolved 而不是乱连
+    assert any(u["name"] == "set_cookie" for u in a.unresolved_calls)
