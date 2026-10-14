@@ -2,7 +2,6 @@ import streamlit as st
 import tempfile
 import os
 from dotenv import load_dotenv
-from neo4j import GraphDatabase
 from graph_builder import build_graph_from_file, build_graph_for_batch
 # --- 引入可视化库 ---
 # uv add streamlit-agraph
@@ -10,6 +9,7 @@ from streamlit_agraph import agraph, Node, Edge, Config
 
 from graph_builder import build_graph_from_file
 from agent import app_graph, run_analysis, render_context
+from graph_store import get_store
 
 # 加载环境变量
 load_dotenv()
@@ -24,86 +24,62 @@ st.set_page_config(
 
 # --- 工具函数：获取 Neo4j 数据用于可视化 ---
 def get_graph_data(limit=100):
-    """从 Neo4j 获取节点和边，转换为 Agraph 格式"""
-    uri = os.getenv("NEO4J_URI")
-    user = os.getenv("NEO4J_USER")
-    pwd = os.getenv("NEO4J_PASSWORD")
-    
+    """从 Neo4j 获取节点和边，转换为 Agraph 格式。
+
+    查询收在 graph_store.subgraph(): app.py 不再直连驱动 (硬伤 #8),
+    也不再各自维护一份 Cypher。
+    """
     nodes = []
     edges = []
-    node_ids = set()
-    
-    # 查询：获取前 N 个关系
-    query = f"""
-    MATCH (n)-[r]->(m)
-    RETURN n, r, m
-    LIMIT {limit}
-    """
-    
+    seen = set()
+
     try:
-        with GraphDatabase.driver(uri, auth=(user, pwd)) as driver:
-            results = driver.execute_query(query).records
-            
-            for record in results:
-                src = record['n']
-                dst = record['m']
-                rel = record['r']
-                
-                # --- 处理源节点 ---
-                # 以 uid 为节点键: name 在跨模块同名的场景下不再唯一
-                if src['uid'] not in node_ids:
-                    # 根据类型区分颜色 (Class用紫色, Function用红色)
-                    n_type = list(src.labels)[0] if src.labels else "Node"
-                    color = "#9D4EDD" if "Class" in n_type else "#FF6B6B"
-
-                    nodes.append(Node(
-                        id=src['uid'],
-                        label=src['name'],
-                        size=25,
-                        shape="dot",
-                        color=color,
-                        title=f"Module: {src.get('module', 'N/A')}\nFile: {src.get('filepath', 'N/A')}\nType: {n_type}"
-                    ))
-                    node_ids.add(src['uid'])
-
-                # --- 处理目标节点 ---
-                if dst['uid'] not in node_ids:
-                    n_type = list(dst.labels)[0] if dst.labels else "Node"
-                    color = "#9D4EDD" if "Class" in n_type else "#4D96FF"
-
-                    nodes.append(Node(
-                        id=dst['uid'],
-                        label=dst['name'],
-                        size=20,
-                        shape="dot",
-                        color=color
-                    ))
-                    node_ids.add(dst['uid'])
-                
-                # --- 处理边 ---
-                edges.append(
-                    Edge(
-                    source=src['uid'],
-                    target=dst['uid'],
-                    label=rel.type, 
-                    color="#A0A0A0",
-                    # 核心修改：优化字体样式
-                    font={
-                        "size": 10,           # 字稍微小一点
-                        "align": "middle",    # 居中对齐
-                        "background": "white",#  关键：给文字加白色背景，遮挡线条
-                        "strokeWidth": 0,     # 去掉文字描边，更清爽
-                        "color": "#333333"    # 文字颜色深灰
-                    },
-                    #  核心修改：开启平滑曲线，防止多条线重叠
-                    smooth={"type": "curvedCW", "roundness": 0.2} 
-                ))
-                
+        data = get_store().subgraph(limit=limit)
+        if data.get("error"):
+            st.error(f"⚠️ 无法连接数据库获取图谱数据: {data['error']}")
+            return [], []
     except Exception as e:
         st.error(f"⚠️ 无法连接数据库获取图谱数据: {e}")
         return [], []
-            
+
+    for node in data["nodes"]:
+        uid = node["uid"]
+        if uid in seen:
+            continue
+        seen.add(uid)
+        # 根据类型区分颜色 (Class 用紫色, Function 用红色)
+        n_type = (node["labels"] or ["Node"])[0]
+        color = "#9D4EDD" if "Class" in n_type else "#FF6B6B"
+        nodes.append(Node(
+            id=uid,
+            label=node["name"],
+            size=25,
+            shape="dot",
+            color=color,
+            title=f"Module: {node.get('module') or 'N/A'}\n"
+                  f"File: {node.get('filepath') or 'N/A'}\nType: {n_type}",
+        ))
+
+    for edge in data["edges"]:
+        if not edge["src"] or not edge["dst"]:
+            continue
+        edges.append(Edge(
+            source=edge["src"],
+            target=edge["dst"],
+            label=edge["rel"],
+            color="#A0A0A0",
+            font={
+                "size": 10,
+                "align": "middle",
+                "background": "white",
+                "strokeWidth": 0,
+                "color": "#333333",
+            },
+            smooth={"type": "curvedCW", "roundness": 0.2},
+        ))
+
     return nodes, edges
+
 
 # ================= 侧边栏：控制面板 =================
 with st.sidebar:

@@ -123,18 +123,54 @@ class _FakeLLM:
 
 @pytest.fixture
 def live_db(monkeypatch):
-    """指向本地 Neo4j; 未启动时检索失败, 指标走 retrieval_failed 分支。"""
+    """指向本地 Neo4j 并灌入 fixture 图, 使断言不依赖库里残留数据。
+
+    必须 reset_store(): graph_store 的驱动是进程级单例, 前一个用例
+    (dead_db) 可能已经把指向 127.0.0.1:1 的驱动缓存下来, 直接复用会让
+    "连本地库" 的用例静默失败。实测踩过: 单跑全绿, 整套跑 3 个失败。
+    """
+    import graph_store as gs
+
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
     monkeypatch.setenv("NEO4J_USER", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", "password123")
+    gs.reset_store()
+    _seed_fixture_graph()
     return os.getenv("NEO4J_URI")
+
+
+def _seed_fixture_graph():
+    """把 benchmarks/fixtures/webapp_py 写入 Neo4j; 库不可达时静默跳过。
+
+    静默跳过是故意的: 无数据库环境下相关用例转为"检索失败"路径,
+    由 test_db_unreachable_is_not_reported_as_hallucination 守护口径,
+    而不是让整个文件崩掉。
+    """
+    try:
+        from graph_builder import CodeAnalyzer, GraphLoader, module_name_for_path, resolve_graph
+
+        fixture = Path(__file__).resolve().parents[1] / "benchmarks" / "fixtures" / "webapp_py"
+        analyzers = [
+            CodeAnalyzer(str(fp), module=module_name_for_path(fp, fixture))
+            for fp in sorted(fixture.rglob("*.py"))
+        ]
+        entities, relations = resolve_graph(analyzers)
+        loader = GraphLoader("bolt://localhost:7687", "neo4j", "password123")
+        loader.clean_db()
+        loader.load_data(entities, relations)
+        loader.close()
+    except Exception:
+        pass
 
 
 @pytest.fixture
 def dead_db(monkeypatch):
+    import graph_store as gs
+
     monkeypatch.setenv("NEO4J_URI", "bolt://127.0.0.1:1")
     monkeypatch.setenv("NEO4J_USER", "x")
     monkeypatch.setenv("NEO4J_PASSWORD", "x")
+    gs.reset_store()
 
 
 def _install_fake_llm(monkeypatch, responses):

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
-from neo4j import GraphDatabase
+import graph_store
 from langgraph.graph import StateGraph, END
 
 # 加载环境变量
@@ -31,68 +31,12 @@ def get_llm():
 
 # --- 2. Neo4j 图检索工具 (GraphRAG 核心) ---
 def query_dependencies(func_name: str) -> dict:
-    """在 Neo4j 中执行双向查询, 返回结构化记录。
+    """图谱检索入口。委托给 graph_store, 这里只做兼容包装。
 
-    返回 dict 而不是渲染好的字符串: 可观测性需要从中取出 calls/called_by 做
-    集合运算。从渲染文本反解析会把 module 名 (auth.service)、filepath
-    (service.py)、中文小标题一并吃进 retrieved 集合, 使幻觉率虚低、覆盖率
-    虚高。渲染交给 render_context()。
-
-    记录形状:
-        {'uid', 'name', 'module', 'filepath', 'lineno', 'calls', 'called_by'}
-    失败时返回 {'error': str} 且无 uid —— 调用方据此区分"检索失败"与
-    "模型在编造", 前者不得计入幻觉率。
+    保留这个函数名是为了不破坏既有调用方 (app.py / 测试);
+    真正的 Cypher 全部在 graph_store.Neo4jGraphStore 里。
     """
-    uri = os.getenv("NEO4J_URI")
-    auth = (os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))
-
-    # 限定 label 到 Function/Method/Class: 旧写法 MATCH (target:Function) 无法匹配方法,
-    # 而放宽到不带 label 又会让同名 Class/Function 互相串。
-    query = """
-    MATCH (target)
-    WHERE (target:Function OR target:Method OR target:Class)
-      AND (target.name = $name OR target.uid ENDS WITH $suffix)
-    OPTIONAL MATCH (target)-[:CALLS]->(downstream)
-    OPTIONAL MATCH (upstream)-[:CALLS]->(target)
-    RETURN
-        target.uid as uid,
-        target.name as name,
-        target.module as module,
-        target.filepath as filepath,
-        target.lineno as lineno,
-        collect(DISTINCT downstream.name) as calls,
-        collect(DISTINCT upstream.name) as called_by
-    """
-    suffix = f":{func_name}"
-
-    try:
-        with GraphDatabase.driver(uri, auth=auth) as driver:
-            result = driver.execute_query(query, name=func_name, suffix=suffix).records
-    except Exception as e:
-        return {"error": f"数据库连接错误: {e}"}
-
-    if len(result) > 1:
-        matches = ", ".join(r["uid"] for r in result)
-        return {"error": f"⚠️ 函数名 '{func_name}' 在图中匹配到多个实体: {matches}。"
-                         f"请使用 module:name 形式指定唯一目标。"}
-
-    if not result:
-        return {"error": f"⚠️ 警告：在知识图谱中未找到函数 '{func_name}'。请检查函数名是否正确。"}
-
-    record = result[0]
-    # collect() 在无匹配时返回 [None], 过滤掉以免污染 retrieved 集合
-    calls = [c for c in (record["calls"] or []) if c]
-    called_by = [c for c in (record["called_by"] or []) if c]
-
-    return {
-        "uid": record["uid"] or func_name,
-        "name": record["name"],
-        "module": record["module"],
-        "filepath": record["filepath"],
-        "lineno": record.get("lineno"),
-        "calls": calls,
-        "called_by": called_by,
-    }
+    return graph_store.get_store().symbol(func_name)
 
 
 def render_context(context: dict) -> str:

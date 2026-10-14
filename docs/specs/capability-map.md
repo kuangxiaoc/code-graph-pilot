@@ -12,7 +12,8 @@
 | `ontology` | RDFS/OWL schema + SHACL 约束校验 + 违规报告 | `graph-core` | 未开始 |
 | `agent-orchestration` | LangGraph 多节点、checkpoint、意图抽取 | `graph-core` | 部分 (4 节点, 无 checkpoint) |
 | `observability` | 轨迹埋点、幻觉率、修正有效率 | `agent-orchestration` | 已交付 (口径见 CONSTRAINTS.md) |
-| `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration` | 部分 (仅 UI) |
+| `graph-store` | Cypher 收口 + 驱动复用 + 可离线测试 | `graph-core` | 已交付 |
+| `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration`, `graph-store` | 部分 (仅 UI) |
 
 ## 依赖方向
 
