@@ -253,3 +253,29 @@ def test_full_real_response_scores_low():
     assert metrics["hallucinated"] == []
     assert metrics["hallucination_rate"] == 0.0
     assert metrics["grounding_recall"] == 1.0
+
+
+def test_hypothetical_examples_are_the_residual_not_fabrication():
+    """记录 residual 的真实构成, 而不是假装它为零。
+
+    12 次重跑基线里 3 次非零, 逐条审计后全部是假设举例与 HTTP 状态码
+    (`user_id` / `scopes` / `401`), 没有一个是模型声称存在于图中的符号。
+    `user_id` 是 snake_case, 形态上就是符号, 抽取器无法与真实符号区分 ——
+    这是**已知下界**, 在 CONSTRAINTS.md 里登记, 不靠改词表掩盖。
+    """
+    retrieved = {"utils.validators:validate_token", "auth.tokens:refresh_token"}
+    response = (
+        "若返回值中携带的元数据 (如 `user_id`、`scopes`) 结构变化, "
+        "刷新后签发的新令牌可能携带错误信息。"
+    )
+    metrics = compute_metrics(retrieved, response)
+    # 被判为幻觉的是举例, 但它们确实是符号形态 —— 指标如实上报
+    assert "user_id" in metrics["hallucinated"]
+    # 关键: 真实检索到的符号一个都没被误判
+    assert not any(r.split(":")[-1] in metrics["hallucinated"] for r in retrieved)
+
+
+def test_builtin_type_names_are_not_symbols():
+    """`bool` / `tuple` 出现在"返回值从 bool 改成 tuple"时指类型。"""
+    for t in ("bool", "tuple", "bytes", "object"):
+        assert extract_symbols("返回值从 `%s` 改为元组" % t) == set(), t

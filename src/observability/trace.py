@@ -88,6 +88,8 @@ _STDLIB_WORDS = {
 _TYPING_WORDS = {
     "NamedTuple", "TypedDict", "Optional", "Union", "Callable", "Generic",
     "Tuple", "List", "Dict", "Set", "Any", "Final", "Literal",
+    # 内置类型名: 模型讨论"返回值从 bool 改成 tuple"时指类型, 不是符号
+    "bool", "int", "float", "bytes", "bytearray", "object", "NoneType",
 }
 
 # 建议语境里模型会**故意**编新名字: "破坏性变更建议新增 `validate_token_v2`"。
