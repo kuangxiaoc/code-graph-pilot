@@ -1,140 +1,249 @@
 # ✈️ CodeGraph Pilot
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Python](https://img.shields.io/badge/Python-3.11-blue)
-![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)
-![LangGraph](https://img.shields.io/badge/LangGraph-0.1-orange)
-![License](https://img.shields.io/badge/license-MIT-grey)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
+[![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
+[![tests](https://img.shields.io/badge/tests-137%20passed-brightgreen)](#评测)
+[![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
-> **Structure-Aware Code Intelligence** | 基于静态分析与知识图谱的代码重构助手
+> **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
+> 用 Cypher 做确定性影响分析, 并用 LangGraph 编排一个带自我审查的分析 Agent。
 
-CodeGraph Pilot 是一个**面向复杂工程的代码理解与重构辅助系统**。它旨在解决传统 RAG（检索增强生成）在代码领域中“语义漂移”与“结构缺失”的问题。通过将源代码转化为 **Code Property Graph (代码属性图)** 并存入 Neo4j，结合 LLM 的推理能力，实现对代码修改影响范围的 **确定性 (Deterministic) 分析**。
+## 这个项目解决什么问题
 
-## 💥 痛点与解决方案
+改一个底层函数, 不知道哪些上层业务会崩 —— 这是遗留系统维护的核心痛点。
+基于向量相似度的 RAG 只能找到"名字像"的代码, 找不到"逻辑上调用"的代码。
 
-在大型遗留系统（Legacy System）的维护中，开发者常面临以下挑战：
-*   **依赖黑盒**：修改一个底层函数，不知道哪些上层业务会崩溃。
-*   **RAG 幻觉**：基于向量相似度的检索往往只能找到“名字像”的代码，而忽略了“逻辑上调用”的代码。
+本项目用 **AST 建图 + Cypher 遍历**回答结构问题, 再用 LLM 把图事实翻译成人话。
+两条能力是分开的: 图负责"哪些符号有关", LLM 负责"这意味什么风险"。
 
-**本项目的解决方案：**
-*   **混合检索架构 (GraphRAG)**：`AST 拓扑结构` (精确召回) + `Vector 语义理解` (模糊召回)。
-*   **自反思 Agent**：引入 `Critic` 角色构建循环工作流，对 LLM 的分析结果进行二次校验。
+## ⚠️ 诚实的边界 (先读这段, 再看特性)
 
-## 🛠️ 系统架构 (Architecture)
+这个项目**不是**什么, 和它**还没做到**什么:
+
+| 不声称 | 实际情况 |
+|---|---|
+| **不是 Code Property Graph (CPG)** | CPG 有精确定义 (Yamaguchi et al. 2014): AST ∪ CFG ∪ PDG。本项目**只有调用图 + 继承边**, 无控制流图、无程序依赖图。准确叫法是 **Code Knowledge Graph (CKG)** |
+| **无向量检索 / 无混合检索** | 没有 Vector DB, 没有 embedding。README 早期版本写的"AST+Vector 混合检索"是**不实的**, 已删除。检索 100% 是 Cypher 结构遍历 |
+| **不支持 Java/Go** | 仅 Python, 基于标准库 `ast`。多语言需引入 tree-sitter, 未做 |
+| **跨文件调用不是全量解析** | 依赖 import 关系 + 名字匹配推断, **不是类型精确的符号解析**。`obj.method()` 会记到 `unresolved_calls` 而不伪造边 |
+| **增量更新未实现** | 每次入库执行 `DETACH DELETE` 全库重建。**仓库级 (>500 文件) 使用会很慢** |
+| **LLM 效果未在真实模型上验证** | Agent 的端到端质量依赖 LLM; 仓库内所有测试用假 LLM (见 [评测](#评测)) |
+
+## 架构
 
 ```mermaid
 graph TD
-    subgraph "Data Ingestion Layer"
-        SourceCode[Python Source Code] -->|AST Parsing| Analyzer[Static Analyzer]
-        Analyzer -->|Extract Entities| Nodes(Class/Function)
-        Analyzer -->|Extract Relations| Edges(CALLS/INHERITS)
-        Nodes & Edges -->|Batch Import| Neo4j[(Neo4j GraphDB)]
+    subgraph Ingestion["数据入库层"]
+        Source[Python 源码] -->|ast.NodeVisitor| Analyzer[CodeAnalyzer]
+        Analyzer -->|实体/关系| Resolve[resolve_graph 跨文件解析]
+        Resolve -->|批量写入| Neo4j[(Neo4j)]
     end
 
-    subgraph "Reasoning Layer (LangGraph)"
-        UserQuery -->|Intent Parsing| AgentState
-        AgentState -->|Cypher Query| Retriever[Graph Retriever]
-        Retriever <-->|Bi-directional Search| Neo4j
-        Retriever -->|Context Injection| Generator[Qwen LLM]
-        Generator -->|Draft Analysis| Critic[Reviewer LLM]
-        Critic -- Pass --> FinalAnswer
-        Critic -- Fail --> Generator
+    subgraph Reasoning["推理层 (LangGraph)"]
+        Query[自然语言问题] --> Parse[parse: 抽取目标符号]
+        Parse --> Retrieve[retrieve: Cypher 检索]
+        Retrieve --> Generate[generate: LLM 生成]
+        Generate --> Review[review: 审查]
+        Review -- PASS --> Answer[最终回答]
+        Review -- FAIL --> Generate
     end
+
+    Neo4j <--> Retrieve
 ```
 
-## ✨ 核心特性
+图模型 (节点以 `module:qualname` 为 uid, 避免同名跨模块串号):
 
-### 1. 确定性静态分析 (Deterministic Static Analysis)
-不依赖 LLM 进行不稳定的结构提取，而是自主研发基于 `ast.NodeVisitor` 的解析引擎。
-*   **多粒度解析**：支持 `Class`, `Method`, `Function` 及其层级关系。
-*   **精确调用链**：能够识别 `self.method()` 类内调用及跨文件引用。
-
-### 2. 双向影响范围追踪 (Bi-directional Impact Analysis)
-在 Neo4j 中实现了定制化的 Cypher 查询模板，支持：
-*   **Outbound (依赖分析)**：该函数调用了哪些底层服务？
-*   **Inbound (影响分析)**：哪些上层业务依赖该函数？（重构高危区）
-
-### 3. 自修正 Agent 工作流 (Self-Correcting Workflow)
-基于 **LangGraph** 构建的状态机包含 `Parse -> Retrieve -> Generate -> Review` 四个阶段。
-*   **Loop 机制**：若 `Reviewer` 发现分析结果与图谱事实不符，会自动触发回退重生成机制，有效降低幻觉率。
-
-## 📂 项目结构
-
-```text
-code-graph-pilot/
-├── src/
-│   ├── agent.py          # LangGraph 状态机与工作流编排
-│   ├── graph_builder.py  # AST 解析器与 Neo4j 数据加载器
-│   ├── app.py            # Streamlit 前端交互与可视化逻辑
-│   └── utils.py          # 辅助工具函数
-├── docker-compose.yml    # Neo4j 数据库容器配置
-├── pyproject.toml        # uv 依赖管理
-├── .env.example          # 环境变量示例
-└── README.md             # 项目文档
+```
+(:Module)-[:IMPORTS]->(:Module)
+(:Class)-[:INHERITS]->(:Class)
+(:Symbol)-[:DEFINED_IN]->(:Module)
+(:Method)-[:BELONGS_TO]->(:Class)
+(:Symbol)-[:CALLS]->(:Symbol)      # 仅当能确定解析目标时建立
 ```
 
-## ⚡️ 快速开始 (Quick Start)
+## 核心能力
+
+### 1. 确定性结构分析
+不依赖 LLM 做结构提取。`ast.NodeVisitor` 解析出 `Class` / `Function` / `Method`
+及其层级, 每个符号带 `filepath` / `lineno` / `module`。
+
+### 2. 双向影响分析
+`graph_store.Neo4jGraphStore` 提供结构化查询:
+- `symbol(name)` — 定位唯一符号, 返回直接上下游 (失败时返回结构化 `error`, 不抛异常)
+- `impact(name, depth)` — **上游传递闭包** (改这个函数最终会影响谁) + 直接下游
+
+上游用传递闭包是因为"影响面"必须传递; 下游只取直接依赖, 展开反而稀释重点。
+
+### 3. 带自我审查的 Agent
+`parse → retrieve → generate → review` 四节点循环。审查不通过会重生成 (最多 1 次)。
+**审查的有效性是有测量口径的**: 轨迹区分 `terminated_by=pass` 与
+`terminated_by=max_revision` —— 旧实现里二者在输出上无法区分, 导致
+"自修正有效"这个说法无法被验证。
+
+### 4. 本体约束校验
+`src/ontology/` 用 RDFS/OWL 定义 schema (`Function`/`Method`/`Class`/`Module`
+及 `CALLS`/`INHERITS` 的 domain/range), 在导出 RDF 后校验。
+当前 fixture: **244 triples, 0 违规**, 已验证可检出 4 类真实缺陷
+(domain/range 违规、悬空边、重复 uid、BELONGS_TO 主体错误)。
+
+### 5. Agent 可观测性
+`src/observability/` 记录每次 run 的轨迹 (JSONL) 并计算:
+
+```
+hallucinated       = claimed - retrieved
+hallucination_rate = |hallucinated| / |claimed|
+grounding_recall   = |claimed ∩ retrieved| / |retrieved|
+```
+
+纯集合运算, **不引入 LLM judge** —— 判定"图里没有的东西出现在答案里"可重复、零成本。
+三条口径纪律 (由测试守护): 检索失败的 run 不计入均值; 比率按 pooled 汇总;
+样本量 < 30 时输出"不得对外宣称"警告 (符号抽取是下界)。
+
+## 快速开始
 
 ### 前置要求
-*   Python 3.10+
-*   Docker & Docker Compose
-*   [uv](https://github.com/astral-sh/uv) (推荐) 或 pip
+Python 3.10+ · Docker · [uv](https://github.com/astral-sh/uv)
 
-### 1. 启动基础设施
-项目依赖 Neo4j 存储图谱数据，使用 Docker 一键启动：
+### 1. 启动 Neo4j
 ```bash
 docker-compose up -d
-# 等待约 20秒，访问 http://localhost:7474 确保 Neo4j 已就绪
-# 默认账号/密码: neo4j / password123
+# 等待约 20 秒, 访问 http://localhost:7474 确认就绪
+# 账号/密码: neo4j / password123
 ```
 
 ### 2. 安装依赖
 ```bash
-# 克隆仓库
-git clone https://github.com/kuangxiaoc/code-graph-pilot.git
-cd code-graph-pilot
-
-# 使用 uv 同步环境 (速度极快)
 uv sync
 ```
 
 ### 3. 配置环境
-复制配置文件并填入你的 API Key：
-```bash
-cp .env.example .env
-```
-在 `.env` 中填入：
+创建 `.env` (已在 `.gitignore`, 勿提交):
+
 ```ini
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password123
-QWEN_API_KEY=sk-xxxxxxxxxxxxxx
+QWEN_API_KEY=sk-...            # 可选: 不填则 LLM 相关功能不可用, 图查询仍可用
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
 
-### 4. 运行系统
+> `.env.example` 尚未提供 —— 请按上面字段手工创建。
+
+### 4. 用 CLI (不需要 LLM Key)
+
 ```bash
-uv run streamlit run src/app.py
+export PYTHONPATH=src        # 或: uv run python src/codegraph.py <cmd>
+
+# 建图: 解析目录 -> 写入 Neo4j
+uv run python -m codegraph build benchmarks/fixtures/webapp_py
+
+# 查符号: 直接上下游
+uv run python -m codegraph symbol validate_token
+
+# 影响分析: 上游传递闭包 + 直接下游
+uv run python -m codegraph impact validate_token --depth 3
+
+# 本体约束校验 (CI 门禁, 违规即退出码非零)
+uv run python -m codegraph validate
 ```
 
-## 📸 演示截图
+`build` / `symbol` / `impact` / `validate` **不需要 LLM Key**;
+默认连接 `bolt://localhost:7687` (与 `docker-compose.yml` 一致), 未写 `.env` 也能用。
 
-| 批量入库与图谱构建 | 深度依赖分析与中文报告 |
-|:---:|:---:|
-| ![alt text](assets/image-1.png) | ![alt text](assets/image-2.png) |
-| *支持多文件批量上传与实时物理引擎渲染* | *Qwen-Plus 生成的结构化风险评估* |
+### 5. 跑 Agent (需要 LLM Key)
+```bash
+uv run python -m codegraph analyze "修改 validate_token 会影响谁"
+uv run streamlit run src/app.py        # Web UI
+```
 
-## 🗺️ Roadmap
+### 6. 看指标
+```bash
+uv run python -m codegraph report              # 汇总轨迹
+uv run python -m codegraph report --json       # 机器可读
+```
 
-- [x] 基于 AST 的 Python 代码静态分析
-- [x] Neo4j 图谱构建与可视化
-- [x] LangGraph 循环 Agent 工作流
-- [ ] 支持 Java/Go 语言解析 (计划引入 Tree-sitter)
-- [ ] 集成 Vector DB 实现完整的 GraphRAG 混合检索
-- [ ] IDE 插件化 (VS Code Extension)
+### 命令面 (共 6 条, 对应已实现能力)
 
-## 📄 License
+| 命令 | 作用 | 需 LLM |
+|---|---|---|
+| `build <path>` | 解析目录写入 Neo4j | 否 |
+| `symbol <name>` | 定位符号, 直接上下游 | 否 |
+| `impact <name>` | 传递闭包影响分析 | 否 |
+| `analyze <query>` | 跑完整 Agent 工作流 | **是** |
+| `report` | 轨迹指标汇总 | 否 |
+| `validate` | 本体约束校验 | 否 |
 
-[MIT](LICENSE)
+每条命令都支持 `--json` (结构化数据走 stdout, 进度/告警走 stderr,
+因此 `codegraph symbol x --json | jq` 干净可用)。
 
----
+## 评测
+
+**当前只有 fixture 级 benchmark, 不是真实仓库评测。**
+
+| 指标 | 值 | 说明 |
+|---|---|---|
+| fixture macro recall | **0.945** | 12 个计分场景, 10 个满分, 1 个已知缺口 |
+| fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
+| fixture 图规模 | 26 符号 / 67 关系 | `benchmarks/fixtures/webapp_py` |
+| 单元测试 | **137 passed** | 全离线: 不调 LLM, 不联网 |
+| 本体违规 | **0** / 244 triples | 见上 |
+
+```bash
+uv run python -m benchmarks.runner      # 跑 benchmark, 退出码非零即 recall 倒退
+uv run pytest tests/ -q                 # 全量测试
+```
+
+**基准口径**: benchmark 打 **recall 不打 accuracy** (见 `docs/decisions/0003-recall-not-accuracy.md`)。
+理由: 我们的失败模式是"漏掉调用者"而不是"多报调用者", recall 直接对应重构风险。
+`ground_truth` 是人工标注的, 不来自自家工具输出 —— 敢让表格里出现 <100% 是可信度来源。
+
+## 项目结构
+
+```text
+src/
+  graph_builder.py    # ast 解析器 + resolve_graph 跨文件解析 + Neo4j 写入
+  graph_store.py      # Cypher 收口 + 进程级驱动复用 + GraphStore 协议
+  codegraph.py        # CLI 入口 (build/symbol/impact/analyze/report/validate)
+  agent.py            # LangGraph 四节点工作流 + 意图符号抽取
+  app.py              # Streamlit UI
+  observability/      # 轨迹记录 + 指标计算 + 报告 (trace/report/__main__)
+  ontology/           # RDFS/OWL schema + 约束校验 (schema/export/validate)
+benchmarks/
+  fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
+  ground_truth/       # 人工标注的期望结果
+  runner.py           # 场景打分
+tests/                # 137 个测试, 全离线
+docs/
+  specs/              # 各模块 spec + capability-map
+  decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
+  knowledge/          # 领域调研 + 评测方法论
+CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
+```
+
+> `src/utils.py` 不存在 (早期 README 误报)。
+
+## 开发约定
+
+- 提交用 Conventional Commits, 中文描述, 带作用域: `feat(core): ...`
+- Python 3.10, uv 管理, 4 空格缩进, docstring 用中文
+- 改动后必跑: `uv run pytest tests/ -q` 与 `uv run python -m benchmarks.runner`
+- **不得为让测试通过而放宽 `CONSTRAINTS.md` 或本体形状**
+- 详见 [AGENTS.md](AGENTS.md)
+
+## Roadmap
+
+**未做 (按优先级):**
+- [ ] 真实仓库评测: 在 `psf/requests` 规模上测跨文件覆盖率, 公布残差
+- [ ] 增量更新: 按文件 hash 做 dirty 检测, 只重建变更文件的子图
+- [ ] MCP 入口: 让编排能力可被外部 agent 调用 (CLI 已交付; MCP 的触发条件见 `docs/specs/SPEC-delivery-surface.md`)
+- [ ] 局部变量类型推断: 提升 `repo.save()` 这类调用的解析率
+
+**明确不做 (YAGNI):**
+- 多语言 (Java/Go): 需引入 tree-sitter, 与当前目标正交
+- 自建 Vector DB: 向量检索不是这个项目的差异点, 补实现不如把结构查询做准
+- 多智能体 / 长期记忆: 无证据表明四节点工作流已到瓶颈
+- CFG/PDG: 最贵; 做了才配叫 CPG, 在那之前继续用 CKG
+
+## License
+
+MIT

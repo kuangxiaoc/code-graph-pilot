@@ -29,6 +29,16 @@ def get_llm():
         )
     return _llm
 
+
+def has_llm_credentials():
+    """是否配置了 LLM 凭据。
+
+    用于 CLI 在跑 analyze 前给出可读提示, 而不是让用户在
+    "401 Unauthorized" 里自己猜原因。
+    """
+    return bool(os.getenv("QWEN_API_KEY"))
+
+
 # --- 2. Neo4j 图检索工具 (GraphRAG 核心) ---
 def query_dependencies(func_name: str) -> dict:
     """图谱检索入口。委托给 graph_store, 这里只做兼容包装。

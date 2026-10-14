@@ -22,6 +22,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 | 本体约束 | fixture 违规数 = 已登记缺口数 | `uv run python -m ontology.validate` | 任务结束 |
 | 指标口径 | 检索失败的 run 不得计入幻觉率均值 | `uv run pytest tests/test_observability_report.py -q` | 每次改动后 |
 | 驱动复用 | 进程内只有一个 Neo4j driver | `uv run pytest tests/test_graph_store.py -q` | 每次改动后 |
+| CLI 契约 | 失败退出码非零 + stderr 可读; `--json` 输出纯净 | `uv run pytest tests/test_cli.py -q` | 每次改动后 |
 
 **本体约束的可判定性必须保持**: 注入 domain/range 违规、悬空边、重复 uid 三类缺陷时,
 `ontology.validate` 必须报出对应规则 (由 `tests/test_ontology.py` 守护)。
@@ -33,7 +34,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 
 | 指标 | 当前值 | 方向 |
 |---|---|---|
-| 单元测试数 | 119 (2026-10-14, graph-store 落地后) | 只增不减 |
+| 单元测试数 | 137 (2026-10-14, CLI 落地后) | 只增不减 |
 | fixture macro recall | 0.945 (12 计分场景) | 只增不减 |
 | fixture 悬空边 | 0 | 保持 0 |
 | 本体违规数 | 0 (244 triples) | 保持 0 |

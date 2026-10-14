@@ -50,11 +50,13 @@ class Neo4jGraphStore:
     """Neo4j 实现。持有单个 driver, 进程内复用。"""
 
     def __init__(self, uri=None, user=None, password=None):
-        self.uri = uri or os.getenv("NEO4J_URI")
+        # 默认值与 docker-compose.yml 一致: 起了容器但没写 .env 也该能用。
+        # 否则报 "URI scheme b'' is not supported", 对用户毫无信息量。
+        self.uri = uri or os.getenv("NEO4J_URI") or "bolt://localhost:7687"
+        self.user = user or os.getenv("NEO4J_USER") or "neo4j"
+        self.password = password or os.getenv("NEO4J_PASSWORD") or "password123"
         self._driver = GraphDatabase.driver(
-            self.uri,
-            auth=(user or os.getenv("NEO4J_USER"),
-                  password or os.getenv("NEO4J_PASSWORD")),
+            self.uri, auth=(self.user, self.password)
         )
 
     def close(self):

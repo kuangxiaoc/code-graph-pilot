@@ -392,8 +392,13 @@ def resolve_graph(analyzers):
 class GraphLoader:
     """把 CodeAnalyzer 的输出写入 Neo4j。"""
 
-    def __init__(self, uri, user, pwd):
-        self.driver = GraphDatabase.driver(uri, auth=(user, pwd))
+    def __init__(self, uri=None, user=None, pwd=None):
+        # 默认值与 docker-compose.yml 一致, 使"起了容器没写 .env"也能直接用。
+        self.driver = GraphDatabase.driver(
+            uri or os.getenv("NEO4J_URI") or "bolt://localhost:7687",
+            auth=(user or os.getenv("NEO4J_USER") or "neo4j",
+                  pwd or os.getenv("NEO4J_PASSWORD") or "password123"),
+        )
 
     def close(self):
         self.driver.close()

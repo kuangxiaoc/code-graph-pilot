@@ -122,7 +122,8 @@ def format_report(summary):
 
     total = summary["total_runs"]
     if not total:
-        lines.append("没有轨迹记录。先跑一次分析: uv run python -m agent_flow")
+        lines.append("没有轨迹记录。先跑一次分析:")
+        lines.append("  uv run python -m codegraph analyze \"修改 validate_token 会影响谁\"")
         return "\n".join(lines)
 
     lines.append(f"样本: {total} runs ({summary['scored_runs']} 计分, "

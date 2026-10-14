@@ -13,7 +13,7 @@
 | `agent-orchestration` | LangGraph 多节点、checkpoint、意图抽取 | `graph-core` | 部分 (4 节点, 无 checkpoint) |
 | `observability` | 轨迹埋点、幻觉率、修正有效率 | `agent-orchestration` | 已交付 (口径见 CONSTRAINTS.md) |
 | `graph-store` | Cypher 收口 + 驱动复用 + 可离线测试 | `graph-core` | 已交付 |
-| `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration`, `graph-store` | 部分 (仅 UI) |
+| `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration`, `graph-store` | 部分 (CLI 已交付; MCP 条件触发) |
 
 ## 依赖方向
 
@@ -33,7 +33,7 @@ graph-core ──┬──> eval-harness
 2. eval-harness          (已完成, 基线已固化)
 3. ontology              (已完成: 244 triples, 0 违规, 可检出 4 类缺陷)
 4. observability         (已完成: 幻觉率/覆盖率/修正有效率, 口径已锁定)
-5. delivery-surface      ← 下一站: CLI / MCP 入口
+5. delivery-surface      (CLI 已交付; MCP 条件触发 —— 需先有真实 LLM 基线)
 ```
 
 ## 判定 "独立可切" 的依据
