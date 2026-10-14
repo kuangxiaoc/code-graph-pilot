@@ -53,6 +53,13 @@ _COMMON_WORDS = {
     "LSP", "AST", "CFG", "PDG", "CKG", "RDF", "OWL", "SPARQL",
 }
 
+# 图谱输出里的占位符, 不是符号。模型会原样引用它们
+# (prompt 要求引用图谱记录, 于是 "无 (None)" 也出现在反引号里)。
+# "无 (None)" 是 prompt 模板里的原文, 必须整体匹配。
+_PLACEHOLDERS = {
+    "无", "无 (None)", "无(None)", "None", "未知", "N/A", "n/a", "",
+}
+
 # 模块名形态: 全小写点分 (auth.service, utils.validators)。
 # 这些是模块而不是符号, 但真实回答里常以 "auth.middleware 模块" 的形式出现。
 _MODULE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+$")
@@ -105,8 +112,6 @@ def _looks_like_identifier(token):
 def extract_symbols(text, known=None):
     """从回答文本中抽取符号名。
 
-    反引号片段最可信, 但为保证召回, 对全文同样抽取。
-
     抽取规则 (按可信度):
     1. **反引号片段** —— 模型显式标注为代码, 最可信, 接受任意形态
     2. **裸标识符** —— 仅 snake_case (validate_token) 与点分限定名
@@ -115,6 +120,11 @@ def extract_symbols(text, known=None):
        手工 blocklist 追不上 (实测三轮各自冒出 ABC/Protocol、
        CI/Callers/Dependencies)。要认它们, 模型必须打反引号。
     3. known 里的全小写符号名 —— 过不了形态过滤但图里真实存在
+
+    反引号里可能是 Python 列表字面量: prompt 要求模型原样引用图谱输出,
+    于是它回贴 `['auth.tokens:refresh_token', 'auth.middleware:authenticate']`。
+    这类内容按逗号拆开后逐个抽取, 否则正则会把 `无 (None)`、`authenticate']`
+    这种碎片当成符号 (实测一次回答 5/8 的"幻觉"全是这类碎片)。
 
     这个不对称是刻意的: 漏抽只会**低估**幻觉率 (安全方向),
     而误抽会让指标失去意义。
@@ -131,20 +141,16 @@ def extract_symbols(text, known=None):
     if not text:
         return set()
 
-    found = set()
-
-    # 1. 反引号片段: 最可信, 不做形态过滤 (但排除模块名与常见词)
-    for match in re.finditer(r"`([^`]+)`", text):
-        token = match.group(1).strip()
-        if ":" in token:
-            token = token.split(":", 1)[1]
-        if token and token not in _STOPWORDS and token not in _COMMON_WORDS:
-            if not _MODULE_NAME_RE.match(token):
-                found.add(token)
-
     # 检索到的符号按规范形建索引, 用于兜底识别全小写名字
     known_norm = normalize_symbols(known)
 
+    found = set()
+
+    # 1. 反引号片段: 最可信
+    for match in re.finditer(r"`([^`]+)`", text):
+        found |= _symbols_from_quoted(match.group(1), known_norm)
+
+    # 2. 裸标识符
     for match in _IDENT_RE.finditer(text):
         token = match.group(0)
         # module:qualname 形式只取 qualname 部分
@@ -152,6 +158,7 @@ def extract_symbols(text, known=None):
             token = token.split(":", 1)[1]
         if _is_bare_symbol(token) or token in known_norm:
             found.add(token)
+
     return found
 
 
@@ -166,11 +173,45 @@ def _is_bare_symbol(token):
     """
     if token in _STOPWORDS or token in _COMMON_WORDS:
         return False
+    if token in _PLACEHOLDERS:
+        return False
     if "." in token:
         return not _MODULE_NAME_RE.match(token)
     if "_" in token:
         return True
     return False
+
+
+def _symbols_from_quoted(fragment, known_norm):
+    """解析反引号片段, 兼容 Python 列表字面量。
+
+    `['a:b', 'c:d']` 这种形态按逗号拆开逐项解析; 普通片段整体当作一个符号。
+    """
+    out = set()
+    stripped = fragment.strip()
+
+    # 列表字面量: 拆开逐项处理
+    if stripped.startswith("[") or stripped.endswith("]"):
+        for item in stripped.strip("[]").split(","):
+            item = item.strip().strip("'\"").strip()
+            if item:
+                out |= _symbols_from_quoted(item, known_norm)
+        return out
+
+    token = stripped
+    if ":" in token:
+        token = token.split(":", 1)[1]
+
+    # 排除占位符 (无 (None) / 无 / 未知) —— 它们不是符号
+    if not token or token in _PLACEHOLDERS:
+        return out
+    if token in _STOPWORDS or token in _COMMON_WORDS:
+        return out
+    if _MODULE_NAME_RE.match(token):
+        return out
+
+    out.add(token)
+    return out
 
 
 def normalize_symbol(name):

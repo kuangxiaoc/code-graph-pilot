@@ -117,3 +117,54 @@ def test_retrieved_set_is_canonical_only(monkeypatch):
     symbols = _retrieved_symbols(record)
     # 只保留 uid 规范形, 不展开成 authenticate / middleware:authenticate 等
     assert symbols == {"auth.middleware:authenticate", "validate_token", "login_route"}
+
+
+# --- Python 列表字面量 (prompt 要求模型原样引用图谱输出, 于是它回贴列表) ---
+
+def test_list_literal_is_split_not_treated_as_one_symbol():
+    """`['a:b', 'c:d']` 必须拆开逐项抽取, 否则正则产出碎片。"""
+    text = "图谱记录: `['auth.tokens:refresh_token', 'auth.middleware:authenticate']`"
+    claimed = extract_symbols(text)
+    assert "refresh_token" in claimed
+    assert "authenticate" in claimed
+    # 不得出现碎片: 半个引号 / 逗号拼接 / 括号
+    assert not any("]" in c or "'" in c or "[" in c for c in claimed)
+
+
+def test_placeholder_in_list_literal_is_not_a_symbol():
+    """"无 (None)" 是 prompt 模板原文, 不是符号。"""
+    assert extract_symbols("图谱记录: `['无 (None)']`") == set()
+
+
+def test_mixed_quote_and_prose():
+    """真实回答形态: 反引号符号 + 列表字面量 + 小标题混排。"""
+    text = (
+        "### 🔽 下游依赖影响 (Outbound)\n"
+        "- **图谱记录**: `['无 (None)']`\n"
+        "- 修改 `validate_token` 将影响 `['refresh_token', 'authenticate']`\n"
+        "- 参见 Inbound Callers 一节"
+    )
+    claimed = extract_symbols(text)
+    assert "validate_token" in claimed
+    assert "refresh_token" in claimed
+    assert "authenticate" in claimed
+    # 小标题与占位符都不得进来
+    assert "Callers" not in claimed
+    assert not any("None" in c or "无" in c for c in claimed)
+
+
+def test_grounding_with_list_literal_quotes():
+    """端到端: 模型用列表字面量复述检索结果时, 覆盖率必须是 100%。"""
+    retrieved = {
+        "utils.validators:validate_token",
+        "auth.tokens:refresh_token",
+        "auth.middleware:authenticate",
+    }
+    response = (
+        "修改 `validate_token` 的上游为 "
+        "`['auth.tokens:refresh_token', 'auth.middleware:authenticate']`, "
+        "下游为 `['无 (None)']`。风险等级高。"
+    )
+    metrics = compute_metrics(retrieved, response)
+    assert metrics["grounding_recall"] == 1.0
+    assert metrics["hallucinated"] == []
