@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+**写代码前先读 `CONSTRAINTS.md`。不得为了让某个改动通过而放宽它。**
+
 ## Project Structure & Module Organization
 
 ```
@@ -9,13 +11,17 @@ src/
   app.py             # Streamlit UI (侧边栏入库 / 对话分析 / 图谱可视化)
 test_code.py         # 演示样本: 4 个互相调用的函数, 供手动入库试用
 assets/              # README 截图
+benchmarks/          # 评测: fixture + 人工 ground truth + 打分 runner
+ontology/            # RDFS/OWL schema + SHACL 约束校验
+docs/specs/          # 能力地图与各模块 spec
 docs/knowledge/      # 领域调研与评测方法笔记
 docker-compose.yml   # Neo4j 容器 (7474 HTTP / 7687 bolt)
 pyproject.toml       # uv 依赖声明
+tests/               # pytest, 全部离线 (不连 Neo4j, 不调 LLM)
+CONSTRAINTS.md       # 质量契约, 含可执行阈值
 ```
 
-Roadmap 方向 (见 `docs/knowledge/`): 存储层抽成 `GraphStore` 协议 (SQLite 默认 + Neo4j 可选),
-并补齐 `Module` 节点、import 解析和增量更新。术语上用 **Code Knowledge Graph (CKG)**,
+模块优先级见 `docs/specs/capability-map.md`。术语统一用 **Code Knowledge Graph (CKG)**,
 不要写 CPG——CFG/PDG 尚未实现。
 
 ## Build, Test, and Development Commands
@@ -23,6 +29,8 @@ Roadmap 方向 (见 `docs/knowledge/`): 存储层抽成 `GraphStore` 协议 (SQL
 ```bash
 docker-compose up -d          # 启动 Neo4j (neo4j / password123)
 uv sync                        # 安装依赖 (Python 3.10, 见 .python-version)
+uv run pytest tests/ -q        # 跑测试 (离线, 约 60 秒)
+uv run python benchmarks/runner.py   # 跑评测, 打印 recall 表格
 uv run streamlit run src/app.py   # 启动前端
 ```
 
@@ -36,10 +44,13 @@ uv run streamlit run src/app.py   # 启动前端
 
 ## Testing Guidelines
 
-**当前没有测试框架**, `pyproject.toml` 未声明 pytest, `test_code.py` 是演示样本而非测试。
-新增测试请先 `uv add --dev pytest`, 放在仓库根 `tests/` 下, 命名 `test_<module>.py`,
-函数以 `test_` 开头。解析逻辑要绕过 Neo4j: 直接断言 `CodeAnalyzer(path).entities / .relations`,
-不连数据库。
+pytest 已在 dev 依赖中, 测试放仓库根 `tests/`, 命名 `test_<module>.py`。
+
+**所有测试必须离线**: 不连 Neo4j、不调 LLM、不访问网络。理由是可重复——
+`agent.py` 的 LLM 已改为惰性构造, 正是为了这个目的。
+
+解析逻辑直接断言 `CodeAnalyzer(...).entities / .relations`, 不经过加载器。
+改动检索质量时同步跑 `benchmarks/runner.py`, 按 `CONSTRAINTS.md` 守住 recall 基线。
 
 ## Commit & Pull Request Guidelines
 
