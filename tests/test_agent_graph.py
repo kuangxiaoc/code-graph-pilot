@@ -53,9 +53,8 @@ def test_retrieved_symbols_filters_none_entries():
     """Cypher collect() 无匹配时返回 [None], 不得进入 retrieved 集合。"""
     from agent import _retrieved_symbols
 
-    # uid 仍贡献 "a:b" 与裸名 "b" —— 目标自身必须计入 (见相邻用例)
     record = {"uid": "a:b", "calls": [None], "called_by": [None]}
-    assert _retrieved_symbols(record) == {"a:b", "b"}
+    assert _retrieved_symbols(record) == {"a:b"}
 
 
 def test_retrieved_symbols_includes_target_itself():
@@ -65,19 +64,24 @@ def test_retrieved_symbols_includes_target_itself():
     record = {"uid": "m:validate_token", "name": "validate_token",
               "calls": [], "called_by": ["authenticate"]}
     symbols = _retrieved_symbols(record)
-    assert "validate_token" in symbols
-    assert "m:validate_token" in symbols
-    assert "authenticate" in symbols
+    # 只存规范形 (uid), 不展开拼写变体 —— 变体进分母会让覆盖率虚低
+    assert symbols == {"m:validate_token", "authenticate"}
 
 
-def test_retrieved_symbols_accepts_all_spellings():
-    """同一符号的裸名 / 限定名 / 方法名写法都必须算命中。"""
+def test_retrieved_symbols_are_canonical_uids_only():
+    """retrieved 只存规范形 (uid), 不展开拼写变体。
+
+    变体展开是曾经的实现, 后果是分母里塞进 "middleware:authenticate"
+    这类中间形态, 覆盖率被虚低 (实测 100% 被算成 22%)。
+    多种写法的对齐由 compute_metrics 的归一化负责, 两侧对称。
+    """
     from agent import _retrieved_symbols
 
     record = {"uid": "auth.service:AuthService.login", "name": "login",
               "calls": ["decode_token"], "called_by": []}
-    symbols = _retrieved_symbols(record)
-    assert {"login", "auth.service:AuthService.login", "AuthService.login"} <= symbols
+    assert _retrieved_symbols(record) == {
+        "auth.service:AuthService.login", "decode_token"
+    }
 
 
 def test_retrieved_symbols_drops_module_and_filepath():
@@ -92,10 +96,7 @@ def test_retrieved_symbols_drops_module_and_filepath():
     # 不从渲染文本正则抽取 (旧实现的坑)。
     assert "auth.service" not in symbols
     assert "service.py" not in symbols
-    # uid 的点分层级会展开成裸名, 这是为了让 "login" 这种写法也算命中
-    assert symbols == {
-        "login", "AuthService.login", "auth.service:AuthService.login", "decode_token",
-    }
+    assert symbols == {"auth.service:AuthService.login", "decode_token"}
 
 
 def test_retrieval_failed_detects_missing_uid():

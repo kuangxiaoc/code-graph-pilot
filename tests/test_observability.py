@@ -21,8 +21,13 @@ def test_extracts_snake_case_identifiers():
 
 
 def test_extracts_camel_case_identifiers():
+    """裸 CamelCase 词不再被抽取 (见 test_metric_normalization.py 的理由)。
+
+    模型要指代码需打反引号; 点分限定名 (AuthService.login) 仍然有效。
+    """
     text = "AuthService 的 login 方法会变"
-    assert "AuthService" in extract_symbols(text)
+    assert extract_symbols(text) == set()
+    assert "AuthService.login" in extract_symbols("AuthService.login 方法会变")
 
 
 def test_extracts_qualified_names():

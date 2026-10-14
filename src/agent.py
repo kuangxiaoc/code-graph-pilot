@@ -112,6 +112,11 @@ def _retrieved_symbols(context):
     用 record['calls'] 而不是从渲染后的字符串里正则抽取 —— 上下文里还含
     module 名 (auth.service)、filepath (service.py)、中文小标题, 正则会把
     它们一并吃进 retrieved, 导致覆盖率虚高、幻觉率虚低。
+
+    只返回**规范形** (uid), 不做任何拼写变体展开。变体展开曾是这里的实现,
+    后果是 retrieved 集合里塞进 "middleware:authenticate" 这类中间形态,
+    分母虚增使覆盖率虚低 (实测: 真实覆盖率 22% -> 修后 100%)。
+    多种写法的对齐由 compute_metrics 的规范化步骤负责, 见 trace.py。
     """
     context = context or {}
     if not isinstance(context, dict):
@@ -119,17 +124,9 @@ def _retrieved_symbols(context):
 
     # 目标自身必须计入: 回答里"修改 `validate_token` 会影响 ..." 是对目标的
     # 事实陈述, 不计入就会把最确定的那个符号判成幻觉, 使幻觉率虚高。
-    names = [context.get("name"), context.get("uid")]
+    names = [context.get("uid")]
     names += list(context.get("calls") or []) + list(context.get("called_by") or [])
-
-    out = set()
-    for n in filter(None, names):
-        # 同一符号在回答里可能写成裸名 / module:qualname / Class.method,
-        # 三种写法都算命中, 否则幻觉率会随 LLM 的书写习惯漂移。
-        out.add(n)
-        out.add(n.split(":", 1)[1] if ":" in n else n)
-        out.add(n.rsplit(".", 1)[1] if "." in n else n)
-    return {n for n in out if n not in _NON_SYMBOL_WORDS}
+    return {n for n in filter(None, names) if n not in _NON_SYMBOL_WORDS}
 
 
 def _retrieval_failed(context):
