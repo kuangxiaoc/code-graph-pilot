@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-159%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-171%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -185,13 +185,32 @@ uv run python -m codegraph report --json       # 机器可读
 | fixture macro recall | **0.945** | 12 个计分场景, 10 个满分, 1 个已知缺口 |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
 | fixture 图规模 | 26 符号 / 67 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **159 passed** | 全离线: 不调 LLM, 不联网 |
+| 单元测试 | **171 passed** | 全离线: 不调 LLM, 不联网 |
 | 本体违规 | **0** / 244 triples | 见上 |
 
 ```bash
 uv run python -m benchmarks.runner      # 跑 benchmark, 退出码非零即 recall 倒退
 uv run pytest tests/ -q                 # 全量测试
 ```
+
+### Agent 幻觉率 (真实 LLM, n=30)
+
+同一批 5 个问题各跑 6 轮, 模型 `glm-5-3-flash-260828`:
+
+| 指标 | 值 | 说明 |
+|---|---|---|
+| 幻觉率均值 | **3.6%** | 中位数 0%, 25/30 轮为 0 |
+| grounding recall | **100%** | 模型只引用图谱里已有符号 |
+| 残留 3.6% 的构成 | 假设举例 2 + 模块前缀 2 + 检索粒度 1 | 逐条人工审计, **真幻觉 0** |
+
+**这个数字是被审计过的, 不是直接读出来的。** 第一版口径报 81.8%, 接着 30 次
+基线报 40.4% —— 但 grounding recall 始终是 100%, 说明模型从未编造符号。
+逐条审计 105 个 flagged 符号后确认全部是抽取假阳性: 建议语境故意编的新名
+(`validate_token_v2`)、文件路径目录名 (`webapp_py`)、Python 关键字 (`async`)。
+按根因修复后降到 3.6%, 残留 4 项经人工确认仍非编造。
+
+教训: **幻觉率是一个需要先审计再相信的指标**。它衡量"抽取器认为模型说了
+什么"与"检索给了什么"的差, 不是"模型是否编造"。
 
 **基准口径**: benchmark 打 **recall 不打 accuracy** (见 `docs/decisions/0003-recall-not-accuracy.md`)。
 理由: 我们的失败模式是"漏掉调用者"而不是"多报调用者", recall 直接对应重构风险。
@@ -212,7 +231,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 159 个测试, 全离线
+tests/                # 171 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
