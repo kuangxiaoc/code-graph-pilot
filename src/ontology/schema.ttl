@@ -1,0 +1,53 @@
+@prefix : <https://codegraph-pilot.dev/ontology#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:BELONGS_TO rdfs:label "BELONGS_TO" ;
+    rdfs:domain :Method ;
+    rdfs:range :Class ;
+    rdfs:type owl:ObjectProperty .
+
+:CALLS rdfs:label "CALLS" ;
+    rdfs:domain :Symbol ;
+    rdfs:range :Symbol ;
+    rdfs:type owl:ObjectProperty .
+
+:DEFINED_IN rdfs:label "DEFINED_IN" ;
+    rdfs:domain :Symbol ;
+    rdfs:range :Module ;
+    rdfs:type owl:ObjectProperty .
+
+:External rdfs:label "External" ;
+    rdfs:subClassOf :Module,
+        :Symbol ;
+    rdfs:type owl:Class .
+
+:Function rdfs:label "Function" ;
+    rdfs:subClassOf :Symbol ;
+    rdfs:type owl:Class .
+
+:IMPORTS rdfs:label "IMPORTS" ;
+    rdfs:domain :Module ;
+    rdfs:range :Module ;
+    rdfs:type owl:ObjectProperty .
+
+:INHERITS rdfs:label "INHERITS" ;
+    rdfs:domain :Class ;
+    rdfs:range :Class ;
+    rdfs:type owl:ObjectProperty .
+
+:Method rdfs:label "Method" ;
+    rdfs:subClassOf :Symbol ;
+    rdfs:type owl:Class .
+
+:Class rdfs:label "Class" ;
+    rdfs:subClassOf :Symbol ;
+    rdfs:type owl:Class .
+
+:Module rdfs:label "Module" ;
+    rdfs:subClassOf :Symbol ;
+    rdfs:type owl:Class .
+
+:Symbol rdfs:type owl:Class .
+
+

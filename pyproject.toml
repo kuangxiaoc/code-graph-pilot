@@ -12,6 +12,7 @@ dependencies = [
     "neo4j>=6.0.3",
     "networkx>=3.4.2",
     "python-dotenv>=1.2.1",
+    "rdflib>=7.5.0",
     "streamlit>=1.52.2",
     "streamlit-agraph>=0.0.45",
 ]
@@ -20,3 +21,8 @@ dependencies = [
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# src/ 与仓库根加入 path, 使 tests 可直接 import graph_builder / ontology / benchmarks
+pythonpath = ["src", "benchmarks", "."]

@@ -1,14 +1,10 @@
 """包内模块命名测试: 目录结构必须映射为点分模块名, 否则跨文件导入全部失配。"""
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from graph_builder import CodeAnalyzer, module_name_for_path, resolve_graph  # noqa: E402
+from graph_builder import CodeAnalyzer, module_name_for_path, resolve_graph
 
 FIXTURE = Path(__file__).resolve().parents[1] / "benchmarks" / "fixtures" / "webapp_py"
-
 
 def test_nested_path_maps_to_dotted_module():
     root = "/proj"
@@ -16,11 +12,9 @@ def test_nested_path_maps_to_dotted_module():
     assert module_name_for_path("/proj/auth/tokens.py", root) == "auth.tokens"
     assert module_name_for_path("/proj/main.py", root) == "main"
 
-
 def test_package_init_maps_to_package_name():
     root = "/proj"
     assert module_name_for_path("/proj/auth/__init__.py", root) == "auth"
-
 
 def test_fixture_imports_resolve_instead_of_becoming_external():
     """fixture 内的跨文件导入必须解析成真实节点, 不得退化成 External 桩。"""
@@ -37,7 +31,6 @@ def test_fixture_imports_resolve_instead_of_becoming_external():
         if e["uid"].split(":")[0].split(".")[0] in {"auth", "services", "utils"}
     ]
     assert internal_stubs == [], f"fixture 内部模块被误判为外部: {internal_stubs}"
-
 
 def test_fixture_cross_module_calls_are_real_edges():
     files = sorted(str(p) for p in FIXTURE.rglob("*.py"))
@@ -56,7 +49,6 @@ def test_fixture_cross_module_calls_are_real_edges():
     assert ("auth.tokens:refresh_token", "utils.validators:validate_token") in pairs
     assert ("auth.service:AuthService.login", "services.db:persist") in pairs
     assert ("routes.api:login_route", "auth.middleware:authenticate") in pairs
-
 
 def test_fixture_has_no_uid_collisions():
     files = sorted(str(p) for p in FIXTURE.rglob("*.py"))

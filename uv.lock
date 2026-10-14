@@ -348,6 +348,7 @@ dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "python-dotenv" },
+    { name = "rdflib" },
     { name = "streamlit" },
     { name = "streamlit-agraph" },
 ]
@@ -366,6 +367,7 @@ requires-dist = [
     { name = "neo4j", specifier = ">=6.0.3" },
     { name = "networkx", specifier = ">=3.4.2" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "rdflib", specifier = ">=7.5.0" },
     { name = "streamlit", specifier = ">=1.52.2" },
     { name = "streamlit-agraph", specifier = ">=0.0.45" },
 ]
