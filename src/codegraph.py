@@ -13,6 +13,7 @@
     uv run python -m codegraph analyze "修改 validate_token 会影响谁"
     uv run python -m codegraph report
     uv run python -m codegraph validate
+    uv run python -m codegraph mcp
 """
 
 import argparse
@@ -219,6 +220,25 @@ def cmd_hierarchy(args):
     return 0
 
 
+def cmd_mcp(args):
+    """启动 MCP 服务。
+
+    延迟 import: mcp 是可选依赖, 不装也能用其余命令。
+    """
+    try:
+        from mcp_server import main as mcp_main
+    except ImportError:
+        return _fail(
+            "未安装 mcp 依赖。安装方法: uv add mcp\n"
+            "  CLI 其余命令不需要它。"
+        )
+
+    if not args.json:
+        print("启动 MCP 服务 (stdio)...", file=sys.stderr)
+    mcp_main()
+    return 0
+
+
 def cmd_analyze(args):
     import agent
 
@@ -331,6 +351,8 @@ def main(argv=None):
     p_report = _add("report", "汇总轨迹指标", cmd_report)
     p_report.add_argument("--last", type=int, default=None, help="只看最近 N 条")
     p_report.add_argument("--path", default=None, help="轨迹 JSONL 路径")
+
+    _add("mcp", "启动 MCP 服务 (stdio, 供外部 agent 调用)", cmd_mcp)
 
     p_validate = _add("validate", "本体约束校验 (CI 门禁)", cmd_validate)
     p_validate.add_argument("--fixture", default="webapp_py")
