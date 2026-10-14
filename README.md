@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-180%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-188%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -196,7 +196,7 @@ uv run python -m codegraph report --json       # 机器可读
 | fixture macro recall | **1.000** | 12 个计分场景, 全部满分 (2026-10-14 起) |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
 | fixture 图规模 | 26 符号 / 71 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **180 passed** | 全离线: 不调 LLM, 不联网 |
+| 单元测试 | **188 passed** | 全离线: 不调 LLM, 不联网 |
 | 本体违规 | **0** / 244 triples | 见上 |
 
 ```bash
@@ -227,6 +227,31 @@ uv run pytest tests/ -q                 # 全量测试
 理由: 我们的失败模式是"漏掉调用者"而不是"多报调用者", recall 直接对应重构风险。
 `ground_truth` 是人工标注的, 不来自自家工具输出 —— 敢让表格里出现 <100% 是可信度来源。
 
+### 真实仓库评测
+
+fixture 满分不代表真实代码好用。因此在 `psf/requests` 上另跑一套
+**只报告事实**的评测 (无 ground truth, 故不称 accuracy):
+
+```bash
+uv run python benchmarks/repo_eval.py /path/to/repo
+```
+
+| 指标 (requests, 19 文件 / 300 符号) | 值 |
+|---|---|
+| CALLS 边 | 401 |
+| 其中指向真实定义 | **239 (59.6%)** |
+| 悬空边 | **0** |
+| unresolved 调用 | 296, 其中真漏检 **17** |
+
+296 个 unresolved 里 279 个是**合理的**: 238 个是内置容器方法
+(`dict.get` / `str.split`), 41 个是第三方库。分类必须显式做 ——
+`requests` 里确实定义了 `get()`, 只按"名字是否被定义过"分会把
+33 个 `dict.get` 全部误报成漏检。
+
+真漏检 17 个集中在: 无类型标注的参数 (`prepared_request` 这类由调用方
+传入)、跨模块的实例属性 (`self.session`)。这是**已公布的残差**,
+不是"解析率 100%"的宣传口径。
+
 ## 项目结构
 
 ```text
@@ -242,7 +267,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 180 个测试, 全离线
+tests/                # 188 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
@@ -263,7 +288,6 @@ CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
 ## Roadmap
 
 **未做 (按优先级):**
-- [ ] 真实仓库评测: 在 `psf/requests` 规模上测跨文件覆盖率, 公布残差
 - [ ] 单文件级 dirty 检测: 当前增量仍需全量解析该目录 (跨文件解析的固有依赖), 加文件 hash 缓存才能只重解析变更文件
 - [ ] MCP 入口: 让编排能力可被外部 agent 调用 (CLI 已交付; MCP 的触发条件见 `docs/specs/SPEC-delivery-surface.md`)
 
