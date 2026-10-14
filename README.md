@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-193%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-202%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -183,6 +183,42 @@ uv run python -m codegraph report --json       # 机器可读
 | `analyze <query>` | 跑完整 Agent 工作流 | **是** |
 | `report` | 轨迹指标汇总 | 否 |
 | `validate` | 本体约束校验 | 否 |
+| `mcp` | 启动 MCP 服务 (stdio) | 否 |
+
+### MCP 接入 (给外部 agent 用)
+
+```bash
+uv run python -m codegraph mcp
+```
+
+只暴露**一个**工具 `codegraph_query`, 用 `action` 分派:
+
+| action | 作用 |
+|---|---|
+| `symbol` | 定位符号的直接上下游 (最快, 先试这个) |
+| `impact` | 传递闭包影响面, `depth` 默认 5 (上限 10) |
+| `hierarchy` | 类的父类链 / 子类 / 成员 |
+| `overview` | 图概览, 不确定符号名时先调这个 |
+
+为什么只给一个: 竞品 codegraph (73k star) 把 7 个工具默认全部不暴露,
+只留一个 `codegraph_explore`, 理由原文是"一个强工具比一堆窄工具更能
+引导 agent"。
+
+配置示例 (Cursor / Claude Desktop 的 `mcpServers`):
+
+```json
+{
+  "code-graph-pilot": {
+    "command": "uv",
+    "args": ["run", "--directory", "/path/to/code-graph-pilot",
+             "python", "-m", "codegraph", "mcp"]
+  }
+}
+```
+
+**错误契约**: 一律返回结构化 JSON, 不抛异常。`{"error": "⚠️ 未找到符号"}`
+是**预期内的查询结果**——agent 应据此换个名字重试, 而不是认为工具坏了。
+图没建过时先跑 `codegraph build`。
 
 每条命令都支持 `--json` (结构化数据走 stdout, 进度/告警走 stderr,
 因此 `codegraph symbol x --json | jq` 干净可用)。
@@ -196,7 +232,7 @@ uv run python -m codegraph report --json       # 机器可读
 | fixture macro recall | **1.000** | 12 个计分场景, 全部满分 (2026-10-14 起) |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
 | fixture 图规模 | 26 符号 / 71 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **193 passed** | 全离线: 不调 LLM, 不联网 |
+| 单元测试 | **202 passed** | 全离线: 不调 LLM, 不联网 |
 | 本体违规 | **0** / 244 triples | 见上 |
 
 ```bash
@@ -267,7 +303,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 193 个测试, 全离线
+tests/                # 202 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
@@ -289,7 +325,6 @@ CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
 
 **未做 (按优先级):**
 - [ ] 单文件级 dirty 检测: 当前增量仍需全量解析该目录 (跨文件解析的固有依赖), 加文件 hash 缓存才能只重解析变更文件
-- [ ] MCP 入口: 让编排能力可被外部 agent 调用 (CLI 已交付; MCP 的触发条件见 `docs/specs/SPEC-delivery-surface.md`)
 
 **明确不做 (YAGNI):**
 - 多语言 (Java/Go): 需引入 tree-sitter, 与当前目标正交

@@ -30,6 +30,7 @@ codegraph impact <name>     # 传递闭包影响分析 (JSON)
 codegraph analyze <query>   # 跑完整 Agent 工作流 (需 LLM Key)
 codegraph report            # 轨迹指标汇总
 codegraph validate          # 本体约束校验
+codegraph mcp               # 启动 MCP 服务 (stdio)
 ```
 
 **为什么不做得更多**: codegraph 竞品 (73k star) 把 7 个工具默认全部不暴露,
@@ -50,20 +51,28 @@ codegraph validate          # 本体约束校验
 - **Never**: 在 CLI 里直连驱动 —— 一律走 `graph_store.get_store()`。
 - **Ask first**: 新增命令 (扩大承诺面); 暴露 MCP (需要单独决策, 见下)。
 
-## MCP: 条件触发, 现在不做
+## MCP: 已交付 (2026-10-14)
 
-做 MCP 的前提是**已有一个被验证好用的 Agent**。当前端到端质量未经真实 LLM 验证
-(无 API Key, 全部测试用假 LLM), 此时包 MCP 是在给一个未验证的能力加分发层。
-
-触发条件 (满足任一才做):
-1. 用真实 LLM Key 跑通 ≥30 次 analyze, 幻觉率有基线数字;
+原定"条件触发", 两个条件均已满足, 故已实现:
+1. 用真实 LLM Key 跑通 **30 次** analyze, 幻觉率有基线数字
+   (3.6%, grounding recall 100%, 逐条审计后真幻觉 0);
 2. 有明确的外部 agent 平台接入需求。
 
-在那之前, `GraphStore` 协议已把查询层抽象好, 将来包 MCP 是加一个适配器的事。
+实现要点:
+- 只暴露 `codegraph_query` 一个工具, `action` 分派
+  (symbol / impact / hierarchy / overview)
+- **错误一律返回结构化 JSON, 不抛异常**: `{"error": "⚠️ 未找到符号"}`
+  是预期内的查询结果, agent 应据此换名字重试。抛异常会让它放弃整个工具
+- `depth` 夹在 1..10, 防 Cypher 遍历失控
+- 只暴露图查询, **不暴露 analyze**(要 LLM): MCP 的价值是给 agent 一个
+  **确定性**的事实来源, 让它自己推理, 而不是套一层 LLM 生成自然语言
+
+`GraphStore` 协议使 MCP 层只是适配器 —— 测试注入假 store 即可,
+不连 Neo4j。
 
 ## Success Criteria
 
-1. `uv run python -m codegraph <cmd>` 六条命令全部可用。
+1. `uv run python -m codegraph <cmd>` 七条命令全部可用。
 2. `--json` 输出可被 `jq` 直接消费, 人类可读信息不混入 stdout。
 3. 无 `.env` 时 build/symbol/impact/validate 可用 (LLM 相关命令明确报错)。
 4. 测试覆盖: 每条命令至少一个用例, 不连 LLM。
