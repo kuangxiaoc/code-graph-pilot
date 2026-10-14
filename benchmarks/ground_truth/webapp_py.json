@@ -1,0 +1,153 @@
+{
+  "_meta": {
+    "fixture": "fixtures/webapp_py",
+    "language": "python",
+    "derivation": "人工阅读源码得出, 不来自本工具输出。修改 fixture 时必须同步手改本文件。",
+    "uid_format": "module:qualname, 例如 auth.tokens:refresh_token",
+    "known_gaps": [
+      "self.audit() 的 audit 继承自 BaseService, 当前实现不做继承感知的方法解析, 该调用记录在 unresolved_calls (场景 13, 标记 known_gap 不计分)。",
+      "无局部变量类型推断: 'repo = Repository(...)' 之后 'repo.save()' 无法解析到 services.db:Repository.save。同样影响 'service = AuthService(...)' 后的 service.login()/service.refresh()。这是场景 11 (0.545) 与场景 12 (0.800) 全部遗漏项的共同根因, 属于硬伤 #4 (obj.method() 只记方法名) 的残留。修复方向: 解析赋值右侧的构造调用, 记录局部名的类型。"
+    ]
+  },
+  "01_find_callers": {
+    "description": "谁调用了 validate_token?",
+    "kind": "callers",
+    "target": "utils.validators:validate_token",
+    "expected": [
+      "auth.tokens:refresh_token",
+      "auth.middleware:authenticate"
+    ]
+  },
+  "02_file_outline": {
+    "description": "auth/service.py 里定义了什么?",
+    "kind": "outline",
+    "target": "auth.service",
+    "expected": [
+      "auth.service:BaseService",
+      "auth.service:BaseService.__init__",
+      "auth.service:BaseService.audit",
+      "auth.service:AuthService",
+      "auth.service:AuthService.login",
+      "auth.service:AuthService.refresh"
+    ]
+  },
+  "03_rename_impact": {
+    "description": "重命名 AuthService 会影响谁?",
+    "kind": "impact",
+    "target": "auth.service:AuthService",
+    "expected": [
+      "auth.middleware:wrapper",
+      "routes.api:login_route",
+      "routes.api:refresh_route",
+      "routes.admin:admin_route"
+    ]
+  },
+  "04_class_hierarchy": {
+    "description": "BaseService 的类层级?",
+    "kind": "hierarchy",
+    "target": "auth.service:BaseService",
+    "expected": [
+      "auth.service:AuthService"
+    ]
+  },
+  "05_login_to_db_chain": {
+    "description": "login 到数据库写入的调用链?",
+    "kind": "callees_transitive",
+    "target": "auth.service:AuthService.login",
+    "expected": [
+      "services.db:persist",
+      "services.db:save_record"
+    ]
+  },
+  "06_file_dependencies": {
+    "description": "routes/api.py 依赖哪些文件?",
+    "kind": "deps",
+    "target": "routes.api",
+    "expected": [
+      "auth.middleware",
+      "auth.service",
+      "services.db",
+      "utils.logger"
+    ]
+  },
+  "07_import_references": {
+    "description": "哪些文件导入了 utils.validators?",
+    "kind": "importers",
+    "target": "utils.validators",
+    "expected": [
+      "auth.middleware",
+      "auth.service",
+      "auth.tokens"
+    ]
+  },
+  "08_search_token_symbols": {
+    "description": "所有与 token 相关的符号?",
+    "kind": "search",
+    "target": "token",
+    "expected": [
+      "utils.validators:validate_token",
+      "auth.tokens:issue_token",
+      "auth.tokens:refresh_token",
+      "auth.tokens:revoke_token"
+    ]
+  },
+  "09_disambiguate_save": {
+    "description": "消歧 'save' (多个同名定义)?",
+    "kind": "search",
+    "target": "save",
+    "expected": [
+      "services.db:save_record",
+      "services.db:Repository.save"
+    ]
+  },
+  "10_high_fanout_get_logger": {
+    "description": "高扇出: 谁调用了 get_logger?",
+    "kind": "callers",
+    "target": "utils.logger:get_logger",
+    "expected": [
+      "auth.middleware:wrapper",
+      "routes.api:login_route",
+      "routes.api:refresh_route",
+      "routes.admin:admin_route"
+    ]
+  },
+  "11_deep_callees": {
+    "description": "深调用链: login_route 往下 3 跳?",
+    "kind": "callees_transitive",
+    "target": "routes.api:login_route",
+    "expected": [
+      "auth.middleware:authenticate",
+      "utils.validators:validate_token",
+      "auth.service:AuthService",
+      "auth.service:AuthService.login",
+      "services.db:persist",
+      "services.db:save_record",
+      "services.db:connect",
+      "services.db:Repository",
+      "services.db:Repository.save",
+      "utils.logger:get_logger",
+      "auth.tokens:issue_token"
+    ]
+  },
+  "12_deep_impact": {
+    "description": "深影响: 改 save_record 影响哪些入口?",
+    "kind": "callers_transitive",
+    "target": "services.db:save_record",
+    "expected": [
+      "services.db:persist",
+      "services.db:Repository.save",
+      "auth.service:AuthService.login",
+      "routes.admin:admin_route",
+      "routes.api:login_route"
+    ]
+  },
+  "13_inheritance_aware_call": {
+    "description": "继承感知: self.audit() 应解析到 BaseService.audit",
+    "kind": "callers",
+    "target": "auth.service:BaseService.audit",
+    "expected": [
+      "auth.service:AuthService.login"
+    ],
+    "status": "known_gap"
+  }
+}

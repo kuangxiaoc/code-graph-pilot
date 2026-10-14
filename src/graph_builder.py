@@ -41,15 +41,39 @@ def derive_module_name(filepath):
     return stem
 
 
+def module_name_for_path(filepath, root):
+    """把文件路径映射为相对 root 的点分模块名。
+
+    例如 root=/proj 时 /proj/utils/validators.py -> "utils.validators"。
+    与 Python 的 import 写法一致, 否则包内跨文件导入会全部失配。
+    """
+    p = Path(filepath).resolve()
+    root = Path(root).resolve()
+    try:
+        rel = p.relative_to(root)
+    except ValueError:
+        # 不在 root 下时退回 stem 策略 (上传临时目录场景)
+        return derive_module_name(filepath)
+
+    parts = list(rel.parts)
+    if parts and parts[-1] == "__init__.py":
+        parts = parts[:-1]
+    else:
+        parts[-1] = Path(parts[-1]).stem
+    return ".".join(parts) if parts else derive_module_name(filepath)
+
+
 class CodeAnalyzer(ast.NodeVisitor):
     """把单个 Python 源文件解析为带 module 限定的实体与关系。"""
 
     def __init__(self, source, module=None, filepath=None):
         # 兼容两种用法: 传源码字符串, 或传文件路径。
-        if module is None and isinstance(source, str) and os.path.isfile(source):
-            filepath = str(source)
-            module = derive_module_name(filepath)
-            with open(filepath, "r", encoding="utf-8") as f:
+        # 传路径时无条件读取文件; 显式传入的 module 优先于路径推导。
+        if isinstance(source, str) and os.path.isfile(source):
+            filepath = filepath or str(source)
+            if module is None:
+                module = derive_module_name(filepath)
+            with open(source, "r", encoding="utf-8") as f:
                 source = f.read()
 
         self.filepath = filepath
