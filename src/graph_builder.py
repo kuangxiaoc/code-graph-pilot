@@ -92,6 +92,8 @@ class CodeAnalyzer(ast.NodeVisitor):
         self._local_functions = {}   # 简单函数名 -> uid
         self._local_methods = {}     # (类名, 方法名) -> uid
         self._import_aliases = {}    # 本地名 -> (来源模块, 原名)
+        self._local_var_types = {}   # (函数 uid, 变量名) -> 类型的 uid 或别名
+        self._pending_var_calls = [] # 跨模块变量类型调用, 待 resolve_graph 判定
         self._seen_rel = set()       # 关系去重
 
         tree = ast.parse(source)
@@ -252,6 +254,55 @@ class CodeAnalyzer(ast.NodeVisitor):
             "kind": "module",
         })
 
+    # ---------- 局部变量类型推断 ----------
+    def visit_Assign(self, node):
+        """记录 `x = ClassName()` 这类赋值, 供 obj.method() 解析。
+
+        为什么需要: 此前 obj.method() 一律记 unresolved, 于是
+        `repo.save()` / `svc.refresh()` 这类最常见的调用形态全部丢失 ——
+        benchmark 的 11_deep_callees 场景 recall 只有 0.545, 遗漏的 5 个
+        符号全部是这个原因。
+
+        为什么只在函数内做: 模块级赋值的生命周期跨函数, 推断错了会把
+        不同函数的调用串到一起。函数内赋值的作用域是确定的。
+        """
+        caller = self._current_function_uid()
+        if caller is not None:
+            type_uid = self._infer_type(node.value)
+            if type_uid is not None:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self._local_var_types[(caller, target.id)] = type_uid
+        self.generic_visit(node)
+
+    def _infer_type(self, value):
+        """从赋值右侧推断类型 uid; 推断不出返回 None。
+
+        只认两种可靠形态:
+        - `ClassName()`: 本模块类或已导入的类
+        - `x`: 已记录类型的另一个局部变量 (链式赋值)
+        """
+        if not isinstance(value, ast.Call):
+            # 链式赋值 y = x: 沿用已知类型
+            if isinstance(value, ast.Name):
+                caller = self._current_function_uid()
+                return self._local_var_types.get((caller, value.id))
+            return None
+
+        func = value.func
+        if isinstance(func, ast.Name):
+            if func.id in self._local_classes:
+                return self._local_classes[func.id]
+            if func.id in self._import_aliases:
+                src_module, orig = self._import_aliases[func.id]
+                return f"{src_module}:{orig or func.id}"
+        elif isinstance(func, ast.Attribute):
+            # module.Class() 形态
+            if isinstance(func.value, ast.Name) and func.value.id in self._import_aliases:
+                src_module, _ = self._import_aliases[func.value.id]
+                return f"{src_module}:{func.attr}"
+        return None
+
     # ---------- 调用收集 ----------
     def visit_Call(self, node):
         caller = self._current_function_uid()
@@ -261,8 +312,9 @@ class CodeAnalyzer(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _resolve_calls(self):
+        self._build_class_index()
         for caller, owner_class, func in self._raw_calls:
-            target = self._resolve_target(func, owner_class)
+            target = self._resolve_target(func, owner_class, caller)
             if target is None:
                 name = self._call_display_name(func)
                 if name and name not in _BUILTIN_NAMES:
@@ -275,7 +327,42 @@ class CodeAnalyzer(ast.NodeVisitor):
             else:
                 self.add_cross_module_edge(caller, "CALLS", target)
 
-    def _resolve_target(self, func, owner_class=None):
+    def _build_class_index(self):
+        """建 类 uid -> 简单类名 的反查表, 并汇总继承关系。
+
+        _resolve_target 拿到的是类 uid (如 auth.service:Repository),
+        但 _local_methods 用简单类名索引, 因此需要反查。
+        """
+        self._class_by_uid = {
+            e["uid"]: e["name"].split(".")[-1]
+            for e in self.entities if e["type"] == "Class"
+        }
+        # 简单类名 -> 父类简单类名 (只保留本模块内的, 跨模块由 resolve_graph 处理)
+        self._bases_by_class = {}
+        for r in self.relations:
+            if r["rel"] == "INHERITS" and r.get("dst_kind") == "Class":
+                child = r["src"].split(":")[-1].split(".")[-1]
+                parent = r["dst"].split(":")[-1].split(".")[-1]
+                self._bases_by_class.setdefault(child, []).append(parent)
+
+    def _lookup_method(self, class_name, attr, _depth=0):
+        """在类及其祖先里找方法; 找不到返回 None。
+
+        必须沿继承链向上找: 子类调用继承来的方法是常态, 只在子类自身查
+        会漏掉绝大多数 (fixture 里 AuthService 的 login 就继承自 BaseService)。
+        """
+        if _depth > 10:  # 防循环继承
+            return None
+        hit = self._local_methods.get((class_name, attr))
+        if hit:
+            return hit
+        for parent in self._bases_by_class.get(class_name, []):
+            found = self._lookup_method(parent, attr, _depth + 1)
+            if found:
+                return found
+        return None
+
+    def _resolve_target(self, func, owner_class=None, caller_ctx=None):
         """把调用表达式解析成目标 uid; 无法确定时返回 None。"""
         # getattr(...)() 之类的动态调用: 不猜
         if isinstance(func, ast.Call):
@@ -296,22 +383,38 @@ class CodeAnalyzer(ast.NodeVisitor):
             attr = func.attr
             value = func.value
 
-            # self.method() -> 当前类的方法
+            # self.method() -> 当前类的方法 (沿继承链找, 不能只查本类)
             if isinstance(value, ast.Name) and value.id == "self":
-                if owner_class and (owner_class, attr) in self._local_methods:
-                    return self._local_methods[(owner_class, attr)]
+                if owner_class:
+                    return self._lookup_method(owner_class, attr)
                 return None
 
-            # Class.method() -> 本模块内的类方法
+            # Class.method() -> 本模块内的类方法 (沿继承链找)
             if isinstance(value, ast.Name) and value.id in self._local_classes:
-                return self._local_methods.get((value.id, attr))
+                return self._lookup_method(value.id, attr)
 
             # module.func() -> 已导入模块
             if isinstance(value, ast.Name) and value.id in self._import_aliases:
                 src_module, _ = self._import_aliases[value.id]
                 return f"{src_module}:{attr}"
 
-            # obj.method(): 对象类型未知, 不伪造
+            # obj.method(): 查该变量被赋的已知类型
+            if isinstance(value, ast.Name):
+                var_type = self._local_var_types.get((caller_ctx, value.id))
+                if var_type is None:
+                    return None
+                # 类型在本模块内: 查该类的方法 (含继承来的)
+                if var_type in self._class_by_uid:
+                    cls = self._class_by_uid[var_type]
+                    return self._lookup_method(cls, attr)
+                # 类型在别的模块: 该类的真实定义可能在别的 analyzer 里,
+                # 此处无法查它的方法表。交给 resolve_graph —— 它看得见全部
+                # 节点, 能沿 BELONGS_TO/INHERITS 找到真实方法。
+                # 之前这里直接拼 f"{var_type}.{attr}", 而 AuthService.audit
+                # 实际继承自 BaseService, 于是凭空造出一个 External 桩。
+                self._pending_var_calls.append((caller_ctx, var_type, attr))
+                return None
+
             return None
 
         return None
@@ -366,7 +469,66 @@ def resolve_graph(analyzers):
             add_relation(rel["src"], rel["rel"], rel["dst"],
                          **{k: v for k, v in rel.items() if k not in ("src", "rel", "dst")})
 
-    # 3. 判定所有跨模块边: 目标存在则连通, 否则建 :External 桩
+    # 3. 第二遍解析: 跨模块的 obj.method() 调用
+    #
+    # 单文件解析时 `svc = AuthService(); svc.audit()` 无法判定 audit 属于
+    # 哪个类 (AuthService 定义在别的文件, 且 audit 可能继承自 BaseService)。
+    # 此时全部节点已归并, 可以按 BELONGS_TO 反查真实方法, 再沿 INHERITS
+    # 向上找。拼 uid 猜位置会造出 External 桩 —— 实测 fixture 里
+    # AuthService.audit 就是这样被误判成外部符号的。
+    methods_of_class = {}
+    for rel in relations:
+        if rel["rel"] == "BELONGS_TO":
+            methods_of_class.setdefault(rel["dst"], []).append(rel["src"])
+    # 类 -> 父类 uid (含跨模块, 两种方向都要记)
+    parents_of = {}
+    for rel in relations:
+        if rel["rel"] == "INHERITS":
+            parents_of.setdefault(rel["src"], []).append(rel["dst"])
+
+    def find_method(class_uid, attr, depth=0):
+        if depth > 10:
+            return None
+        for m in methods_of_class.get(class_uid, []):
+            if m.rsplit(":", 1)[-1].rsplit(".", 1)[-1] == attr:
+                return m
+        for parent in parents_of.get(class_uid, []):
+            hit = find_method(parent, attr, depth + 1)
+            if hit:
+                return hit
+        return None
+
+    resolved_names = set()
+    for analyzer in analyzers:
+        for caller, var_type, attr in getattr(analyzer, "_pending_var_calls", []):
+            hit = find_method(var_type, attr)
+            if hit:
+                add_relation(caller, "CALLS", hit)
+                # 这条调用已在第二遍解析成功, 必须撤销第一遍记的 unresolved,
+                # 否则同一条调用既连了真实边又留在 unresolved 清单里。
+                resolved_names.add((caller, attr))
+                continue
+            # 类存在但方法找不到 (外部库/动态属性): 建桩而不是丢边
+            add_relation(caller, "CALLS", f"{var_type}.{attr}", dst_kind="Unknown")
+            if f"{var_type}.{attr}" not in entities:
+                add_entity({
+                    "type": "External",
+                    "name": f"{var_type}.{attr}",
+                    "uid": f"{var_type}.{attr}",
+                    "module": var_type.split(":", 1)[0],
+                    "filepath": None,
+                    "lineno": None,
+                    "external": True,
+                    "kind": "symbol",
+                })
+
+    for analyzer in analyzers:
+        analyzer.unresolved_calls = [
+            u for u in analyzer.unresolved_calls
+            if (u["caller"], u["name"]) not in resolved_names
+        ]
+
+    # 4. 判定所有跨模块边: 目标存在则连通, 否则建 :External 桩
     for analyzer in analyzers:
         for rel in analyzer.external_relations:
             dst = rel["dst"]

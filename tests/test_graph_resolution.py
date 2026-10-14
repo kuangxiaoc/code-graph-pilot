@@ -229,3 +229,83 @@ def test_incremental_build_drops_stale_subgraph(monkeypatch, tmp_path):
     assert operations[0] == ("drop_modules", ("pkg.caller", "pkg.validators"))
     # 顺序很重要: 先删后写, 否则 MERGE 会把幽灵节点留下来
     assert operations[1][0] == "load_data"
+
+
+# --- 局部变量类型推断 (原硬伤 #4 剩余一半) ---
+#
+# `obj.method()` 此前一律记 unresolved, 于是 repo.save() / svc.refresh()
+# 这类最常见的调用形态全部丢失。benchmark 的 11_deep_callees 场景 recall
+# 只有 0.545, 遗漏的 5 个符号全是这个原因; 修完 12/12 满分。
+
+def test_local_var_type_resolves_obj_method():
+    """`repo = Repository()` 之后 `repo.save()` 必须解析到真实方法。"""
+    a = CodeAnalyzer(
+        "from services.db import Repository\n\n"
+        "def f():\n    repo = Repository()\n    repo.save()\n",
+        module="a",
+    )
+    b = CodeAnalyzer(
+        "class Repository:\n    def save(self):\n        pass\n",
+        module="services.db",
+    )
+    entities, relations = resolve_graph([a, b])
+    assert ("a:f", "services.db:Repository.save") in calls(relations)
+    assert a.unresolved_calls == []
+
+
+def test_inherited_method_resolves_via_base_class():
+    """子类调用继承来的方法, 必须解析到**父类**的方法节点。"""
+    a = CodeAnalyzer(
+        "class Base:\n    def audit(self):\n        pass\n"
+        "class Child(Base):\n    def run(self):\n        pass\n"
+        "def f():\n    c = Child()\n    c.audit()\n",
+        module="m",
+    )
+    entities, relations = resolve_graph([a])
+    assert ("m:f", "m:Base.audit") in calls(relations)
+
+
+def test_self_call_resolves_to_inherited_method():
+    """self.audit() 中 audit 定义在父类时, 不得造出 Child.audit 桩。"""
+    a = CodeAnalyzer(
+        "class Base:\n    def audit(self):\n        pass\n"
+        "class Child(Base):\n    def run(self):\n        self.audit()\n",
+        module="m",
+    )
+    entities, relations = resolve_graph([a])
+    assert ("m:Child.run", "m:Base.audit") in calls(relations)
+    # 不得凭空造出 Child.audit
+    assert not any("Child.audit" in r["dst"] for r in relations)
+
+
+def test_unknown_var_type_stays_unresolved():
+    """类型推断不出来的调用, 不得伪造 —— 宁可 unresolved 也不能乱连边。"""
+    a = CodeAnalyzer("def g(x):\n    x.unknown_method()\n", module="m")
+    entities, relations = resolve_graph([a])
+    assert not any(r["rel"] == "CALLS" and "unknown_method" in r["dst"]
+                   for r in relations)
+    assert a.unresolved_calls
+
+
+def test_cross_module_var_type_resolves_to_real_method():
+    """跨模块的 svc = AuthService(); svc.audit() 必须找到真实方法节点。
+
+    单文件解析看不见 AuthService 的方法表, 且 audit 继承自 BaseService ——
+    必须等节点归并后按 BELONGS_TO/INHERITS 反查, 不能拼 uid 猜。
+    """
+    svc = CodeAnalyzer(
+        "class BaseService:\n    def audit(self):\n        pass\n"
+        "class AuthService(BaseService):\n    def login(self):\n        pass\n",
+        module="auth.service",
+    )
+    route = CodeAnalyzer(
+        "from auth.service import AuthService\n\n"
+        "def admin_route():\n    s = AuthService()\n    return s.audit('x')\n",
+        module="routes.admin",
+    )
+    entities, relations = resolve_graph([svc, route])
+    assert ("routes.admin:admin_route",
+            "auth.service:BaseService.audit") in calls(relations)
+    # audit 继承自 BaseService, 不得造出 AuthService.audit 桩
+    assert not any(e["uid"] == "auth.service:AuthService.audit"
+                   for e in entities)
