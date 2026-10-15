@@ -15,7 +15,7 @@ src/
   ontology/          # RDFS/OWL schema + 约束校验
 test_code.py         # 演示样本: 4 个互相调用的函数, 供手动入库试用
 assets/              # README 截图
-benchmarks/          # 评测: fixture + 人工 ground truth + 打分 runner
+benchmarks/          # 评测: fixture + 人工 ground truth + 真实仓库 runner
 docs/specs/          # 能力地图与各模块 spec
 docs/decisions/      # ADR
 docs/knowledge/      # 领域调研与评测方法笔记
@@ -25,6 +25,9 @@ tests/               # pytest, 全部离线 (不连 Neo4j, 不调 LLM)
 CONSTRAINTS.md       # 质量契约, 含可执行阈值
 ```
 
+手动试用样本用 `benchmarks/fixtures/webapp_py` (9 个文件, 与 ground truth
+配套); 根目录不再放演示脚本。
+
 模块优先级见 `docs/specs/capability-map.md`。术语统一用 **Code Knowledge Graph (CKG)**,
 不要写 CPG——CFG/PDG 尚未实现。
 
@@ -33,8 +36,9 @@ CONSTRAINTS.md       # 质量契约, 含可执行阈值
 ```bash
 docker-compose up -d          # 启动 Neo4j (neo4j / password123)
 uv sync                        # 安装依赖 (Python 3.10, 见 .python-version)
-uv run pytest tests/ -q        # 跑测试 (全离线, 约 35 秒)
-uv run python benchmarks/runner.py   # 跑评测, 打印 recall 表格
+uv run pytest tests/ -q        # 跑测试 (全离线, 218 个约 34 秒)
+uv run python -m benchmarks.runner   # 跑 fixture 评测, 打印 recall 表格
+uv run python benchmarks/repo_eval.py /path/to/repo  # 真实仓库: 解析率与残差
 uv run python -m codegraph symbol validate_token   # 查符号 (不连 LLM)
 uv run streamlit run src/app.py   # 启动前端
 ```

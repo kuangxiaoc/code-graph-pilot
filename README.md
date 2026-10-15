@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green)](https://neo4j.com/)
-[![tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)](#评测)
+[![tests](https://img.shields.io/badge/tests-218%20passed-brightgreen)](#评测)
 [![License](https://img.shields.io/badge/license-MIT-grey)](#license)
 
 > **Structure-Aware Code Intelligence** — 把 Python 源码建成代码知识图谱 (CKG),
@@ -94,7 +94,7 @@ uv run python -m codegraph hierarchy AuthService
 ### 4. 本体约束校验
 `src/ontology/` 用 RDFS/OWL 定义 schema (`Function`/`Method`/`Class`/`Module`
 及 `CALLS`/`INHERITS` 的 domain/range), 在导出 RDF 后校验。
-当前 fixture: **244 triples, 0 违规**, 已验证可检出 4 类真实缺陷
+当前 fixture: **249 triples, 0 违规**, 已验证可检出 4 类真实缺陷
 (domain/range 违规、悬空边、重复 uid、BELONGS_TO 主体错误)。
 
 ### 5. Agent 可观测性
@@ -220,6 +220,14 @@ uv run python -m codegraph mcp
 是**预期内的查询结果**——agent 应据此换个名字重试, 而不是认为工具坏了。
 图没建过时先跑 `codegraph build`。
 
+**已实测的边界 (2026-10-15, requests 图 + 官方 MCP client 走 stdio)**:
+`overview` 只返回前 100 个节点 (`subgraph(limit=100)`), 图更大时它看到的是
+**截断视图**——不确定符号名时应改用 `symbol` 配裸名试探, 或先 `build`
+单个子目录。另一个已知缺口: 静态类型声明为基类时 (requests 的
+`adapter = self.get_adapter(url)` 返回 `BaseAdapter`), `adapter.send()`
+只连到 `BaseAdapter.send`, 子类重写 `HTTPAdapter.send` 没有上游,
+因此 `impact` 对它的返回是空。**改被继承方法前不要只信这一个工具的结论**。
+
 每条命令都支持 `--json` (结构化数据走 stdout, 进度/告警走 stderr,
 因此 `codegraph symbol x --json | jq` 干净可用)。
 
@@ -231,9 +239,9 @@ uv run python -m codegraph mcp
 |---|---|---|
 | fixture macro recall | **1.000** | 12 个计分场景, 全部满分 (2026-10-14 起) |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
-| fixture 图规模 | 26 符号 / 71 关系 | `benchmarks/fixtures/webapp_py` |
-| 单元测试 | **209 passed** | 全离线: 不调 LLM, 不联网 |
-| 本体违规 | **0** / 244 triples | 见上 |
+| fixture 图规模 | 26 符号 / 72 关系 | `benchmarks/fixtures/webapp_py` |
+| 单元测试 | **218 passed** | 全离线: 不调 LLM, 不联网 |
+| 本体违规 | **0** / 249 triples | 见上 |
 
 ```bash
 uv run python -m benchmarks.runner      # 跑 benchmark, 退出码非零即 recall 倒退
@@ -275,17 +283,19 @@ uv run python benchmarks/repo_eval.py /path/to/repo
 | 指标 (requests, 19 文件 / 300 符号) | 值 |
 |---|---|
 | CALLS 边 | 401 |
-| 其中指向真实定义 | **239 (59.6%)** |
+| 其中指向真实定义 | **242 (60.4%)** |
 | 悬空边 | **0** |
-| unresolved 调用 | 296, 其中真漏检 **17** |
+| unresolved 调用 | 293, 其中真漏检 **14** |
 
-296 个 unresolved 里 279 个是**合理的**: 238 个是内置容器方法
+293 个 unresolved 里 279 个是**合理的**: 238 个是内置容器方法
 (`dict.get` / `str.split`), 41 个是第三方库。分类必须显式做 ——
 `requests` 里确实定义了 `get()`, 只按"名字是否被定义过"分会把
 33 个 `dict.get` 全部误报成漏检。
 
-真漏检 17 个集中在: 无类型标注的参数 (`prepared_request` 这类由调用方
-传入)、跨模块的实例属性 (`self.session`)。这是**已公布的残差**,
+真漏检 14 个集中在 `super().method()` 且**父类在外部库**的情形
+(`LookupDict(dict)` 的 `super().__init__()`、`CookieJar` 继承自
+`http.cookiejar.CookieJar` 的 `set_cookie`) —— 源码不在仓库里,
+没有可连的真实定义。本模块内的 `super()` 已能解析。这是**已公布的残差**,
 不是"解析率 100%"的宣传口径。
 
 ## 项目结构
@@ -303,7 +313,7 @@ benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
   runner.py           # 场景打分
-tests/                # 209 个测试, 全离线
+tests/                # 218 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map
   decisions/          # ADR (uid 模型、外延桩、recall 口径、Neo4j 保留)
@@ -327,6 +337,11 @@ CONSTRAINTS.md        # 质量契约: 每条规则都点名了判定命令
 
 **已完成 (本轮):**
 - [x] MCP 入口 (见上)
+- [x] 类型推断补齐 (MCP 端到端实测驱动): `self.method()` 返回值标注推断
+      (`conn = self.get_conn()` -> `conn.urlopen()`)、本模块内
+      `super().method()` 解析、`Any`/`Optional` 等泛标注不再当类型用
+      (此前会造出 `typing:Any.foo` 这种假符号桩)、多态分派边。
+      真实仓库 (requests) 解析率 59.6% -> 60.4%, fixture recall 保持 1.000。
 - [x] 文件 hash 缓存: `--cache` 只重解析变更文件。**默认关闭** ——
       实测 300 文件解析约 25ms、hash 约 4ms, 小仓库上净亏损,
       只在"文件多、改动少"时才划算。收益未经验证就不进默认路径。

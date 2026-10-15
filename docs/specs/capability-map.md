@@ -7,13 +7,13 @@
 
 | Module id | 职责 | 依赖 | 状态 |
 |---|---|---|---|
-| `graph-core` | AST 解析、uid 图模型、`resolve_graph`、Neo4j 加载、增量索引 | — | 已交付 (macro recall 0.945) |
+| `graph-core` | AST 解析、uid 图模型、`resolve_graph`、Neo4j 加载、增量索引、类型推断 | — | 已交付 (macro recall 1.000) |
 || `eval-harness` | fixture、人工 ground truth、场景打分、回归基线 | `graph-core` | 已交付 |
 | `ontology` | RDFS/OWL schema + SHACL 约束校验 + 违规报告 | `graph-core` | 未开始 |
 | `agent-orchestration` | LangGraph 多节点、checkpoint、意图抽取 | `graph-core` | 部分 (4 节点, 无 checkpoint) |
 | `observability` | 轨迹埋点、幻觉率、修正有效率 | `agent-orchestration` | 已交付 (口径见 CONSTRAINTS.md) |
 | `graph-store` | Cypher 收口 + 驱动复用 + 可离线测试 | `graph-core` | 已交付 |
-| `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration`, `graph-store` | 部分 (CLI 已交付; MCP 条件触发) |
+| `delivery-surface` | CLI / MCP / Streamlit UI 三入口 | `graph-core`, `agent-orchestration`, `graph-store` | 已交付 (CLI + MCP 均经真实端到端验证) |
 
 ## 依赖方向
 
@@ -29,11 +29,11 @@ graph-core ──┬──> eval-harness
 ## 构建顺序
 
 ```
-1. graph-core            (已完成, 继续收尾: 局部变量类型推断、增量更新)
+1. graph-core            (已完成: 含参数标注/返回值/相对导入/多态分派推断)
 2. eval-harness          (已完成, 基线已固化)
-3. ontology              (已完成: 244 triples, 0 违规, 可检出 4 类缺陷)
+3. ontology              (已完成: 249 triples, 0 违规, 可检出 4 类缺陷)
 4. observability         (已完成: 幻觉率/覆盖率/修正有效率, 口径已锁定)
-5. delivery-surface      (CLI 已交付; MCP 条件触发 —— 需先有真实 LLM 基线)
+5. delivery-surface      (已完成: CLI + MCP stdio 端到端 + Streamlit UI)
 ```
 
 ## 判定 "独立可切" 的依据

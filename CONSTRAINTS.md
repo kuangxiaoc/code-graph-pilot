@@ -19,13 +19,13 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 | 图完整性 | fixture 图悬空边 = 0 | `uv run pytest tests/test_benchmark_runner.py -q` | 每次改动后 |
 | 检索质量 | fixture macro recall = 1.000 (12 场景全满分) | `uv run python -m benchmarks.runner` | 每次改动后 |
 | 单元测试 | 全部通过 | `uv run pytest tests/ -q` | 任务结束 |
-| 本体约束 | fixture 违规数 = 已登记缺口数 | `uv run python -m ontology.validate` | 任务结束 |
+| 本体约束 | fixture 违规数 = 已登记缺口数 | `PYTHONPATH=src uv run python -m ontology validate` | 任务结束 |
 | 指标口径 | 检索失败的 run 不得计入幻觉率均值 | `uv run pytest tests/test_observability_report.py -q` | 每次改动后 |
 | 驱动复用 | 进程内只有一个 Neo4j driver | `uv run pytest tests/test_graph_store.py -q` | 每次改动后 |
 | CLI 契约 | 失败退出码非零 + stderr 可读; `--json` 输出纯净 | `uv run pytest tests/test_cli.py -q` | 每次改动后 |
 
 **本体约束的可判定性必须保持**: 注入 domain/range 违规、悬空边、重复 uid 三类缺陷时,
-`ontology.validate` 必须报出对应规则 (由 `tests/test_ontology.py` 守护)。
+`ontology validate` 必须报出对应规则 (由 `tests/test_ontology.py` 守护)。
 否则该约束只是在读一份没人用的 TTL。
 
 每一行都点名了产出判定的命令。没有命令的维度只是愿望, 不是约束。
@@ -34,10 +34,10 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 
 | 指标 | 当前值 | 方向 |
 |---|---|---|
-| 单元测试数 | 209 (2026-10-14) | 只增不减 |
+| 单元测试数 | 218 (2026-10-15) | 只增不减 |
 | fixture macro recall | 1.000 (12 计分场景, 全满分) | 只增不减 |
 | fixture 悬空边 | 0 | 保持 0 |
-| 本体违规数 | 0 (244 triples) | 保持 0 |
+| 本体违规数 | 0 (249 triples) | 保持 0 |
 
 **可观测性基线 (2026-10-14 建立):** fixture 图 + 假回答端到端 6 runs,
 幻觉率 50% (grounded 回答 33%, 掺入虚构符号的回答 67%), 检索失败 0 计分。
@@ -63,7 +63,7 @@ snake_case, 形态上与真实符号无法区分, 抽取器会把它们计入 cl
 **样本量门槛**: 计分样本 < 30 时报告必须输出"不得对外宣称"警告
 (符号抽取是下界, 见 SPEC-observability.md Open Questions)。
 
-**本体层基线 (2026-10-14 建立):** fixture 图上违规数 = **0**, 244 triples。
+**本体层基线 (2026-10-14 建立, 2026-10-15 复跑):** fixture 图上违规数 = **0**, 249 triples。
 已验证可检出 4 类真实缺陷: domain/range 违规 (label 串号)、悬空边、
 重复 uid、BELONGS_TO 主体错误。
 
