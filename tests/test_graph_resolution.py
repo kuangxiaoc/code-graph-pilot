@@ -380,3 +380,170 @@ def test_function_result_is_not_treated_as_type():
                    for r in relations if r["rel"] == "CALLS")
     # jar 的类型未知, 因此 set_cookie 必须留在 unresolved 而不是乱连
     assert any(u["name"] == "set_cookie" for u in a.unresolved_calls)
+
+
+# --- self.method() 返回值类型推断 (requests 真实缺口驱动) ---
+#
+# `conn = self.get_connection_with_tls_context(...)` 之后 `conn.urlopen()`
+# 是真实仓库里最典型的调用形态 (adapters.py:696)。此前的推断只认
+# `x = ClassName()` 与链式赋值, 于是整条链断在赋值处。
+# 只在本模块有 `-> Type` 标注时才推断: 跨模块目标的方法表在单文件
+# 解析期不可见, 交给 resolve_graph 的第二遍解析更稳。
+
+def test_self_method_return_type_resolves_obj_method():
+    """`conn = self.get_conn()` 之后 `conn.urlopen()` 必须解析到真实方法。"""
+    src = (
+        "class Conn:\n    def urlopen(self):\n        pass\n"
+        "class Adapter:\n"
+        "    def get_conn(self) -> Conn:\n        return Conn()\n"
+        "    def send(self):\n"
+        "        conn = self.get_conn()\n        conn.urlopen()\n"
+    )
+    a = CodeAnalyzer(src, module="m")
+    entities, relations = resolve_graph([a])
+    assert ("m:Adapter.send", "m:Conn.urlopen") in calls(relations)
+    assert a.unresolved_calls == []
+
+
+def test_self_method_return_type_cross_module():
+    """`-> Conn` 的 Conn 定义在别的模块时, 也必须连到真实方法。"""
+    a = CodeAnalyzer(
+        "from .pool import Conn\n\n"
+        "class Adapter:\n"
+        "    def get_conn(self) -> Conn:\n        ...\n"
+        "    def send(self):\n"
+        "        conn = self.get_conn()\n        conn.urlopen()\n",
+        module="adapters", filepath="adapters.py",
+    )
+    b = CodeAnalyzer("class Conn:\n    def urlopen(self):\n        pass\n",
+                     module="pool", filepath="pool.py")
+    entities, relations = resolve_graph([a, b])
+    assert ("adapters:Adapter.send", "pool:Conn.urlopen") in calls(relations)
+    assert a.unresolved_calls == []
+
+
+def test_self_method_return_type_without_annotation_is_not_guessed():
+    """方法没有返回标注时不得猜 —— 宁可 unresolved 也不能乱连边。"""
+    src = (
+        "class A:\n    def urlopen(self):\n        pass\n"
+        "class B:\n    def urlopen(self):\n        pass\n"
+        "class Adapter:\n"
+        "    def get_conn(self):\n        return 1\n"
+        "    def send(self):\n"
+        "        conn = self.get_conn()\n        conn.urlopen()\n"
+    )
+    a = CodeAnalyzer(src, module="m")
+    entities, relations = resolve_graph([a])
+    assert not any(r["rel"] == "CALLS" and r["dst"].endswith(".urlopen")
+                   for r in relations)
+    assert a.unresolved_calls
+
+
+def test_self_method_return_type_unknown_annotation_is_not_guessed():
+    """返回标注是外部类型 (本仓库未提供源码) 时不得猜方法归属。"""
+    src = (
+        "class Adapter:\n"
+        "    def get_conn(self) -> ExternalThing:\n        ...\n"
+        "    def send(self):\n"
+        "        conn = self.get_conn()\n        conn.urlopen()\n"
+    )
+    a = CodeAnalyzer(src, module="m")
+    entities, relations = resolve_graph([a])
+    # ExternalThing 未定义: 不得造出 ExternalThing.urlopen 之外的假边
+    assert not any(r["rel"] == "CALLS" and r["dst"].endswith(".urlopen")
+                   for r in relations)
+
+
+def test_wildcard_annotation_is_not_a_type():
+    """`resp: Any` 不得把变量类型记成 typing:Any 并造出假符号桩。
+
+    requests.adapters 里 `def build_response(self, req, resp: Any)`
+    之后 `resp.connection_from_url()` 曾连到
+    `typing:Any.connection_from_url` —— 一个不存在的符号节点。
+    """
+    a = CodeAnalyzer(
+        "from typing import Any\n\n"
+        "def build(resp: Any):\n    return resp.connection_from_url('x')\n",
+        module="m",
+    )
+    entities, relations = resolve_graph([a])
+    assert not any("typing:Any" in r["dst"] for r in relations)
+    # 类型未知 -> 留在 unresolved, 而不是连到假符号
+    assert any(u["name"] == "connection_from_url" for u in a.unresolved_calls)
+
+
+def test_send_chain_resolves_through_returned_type():
+    """requests sessions.py 的真实形态: `resp = self.send(prep)`。"""
+    a = CodeAnalyzer(
+        "class Prep:\n    def prepare(self):\n        pass\n"
+        "class Session:\n"
+        "    def send(self, prep) -> Prep:\n        return prep\n"
+        "    def request(self):\n"
+        "        prep = Prep()\n"
+        "        resp = self.send(prep)\n"
+        "        resp.prepare()\n",
+        module="sessions",
+    )
+    entities, relations = resolve_graph([a])
+    assert ("sessions:Session.request", "sessions:Prep.prepare") in calls(relations)
+
+
+def test_super_call_resolves_to_parent_method():
+    """`super().set_cookie()` 必须解析到父类的真实方法, 不留在 unresolved。
+
+    requests.cookies.RequestsCookieJar.set_cookie 调
+    `super().set_cookie(...)`, 父类 CookieJar 定义在同文件 —— 这是
+    真实仓库里 15 条真漏检的共同根因 (4 个 __init__ + set_cookie/__iter__
+    /__contains__/update)。
+    """
+    a = CodeAnalyzer(
+        "class CookieJar:\n    def set_cookie(self, c):\n        pass\n"
+        "class RequestsCookieJar(CookieJar):\n"
+        "    def set_cookie(self, cookie):\n"
+        "        return super().set_cookie(cookie)\n",
+        module="cookies",
+    )
+    entities, relations = resolve_graph([a])
+    assert ("cookies:RequestsCookieJar.set_cookie",
+            "cookies:CookieJar.set_cookie") in calls(relations)
+    assert a.unresolved_calls == []
+
+
+def test_super_call_with_unknown_parent_stays_unresolved():
+    """父类来自外部库 (http.cookiejar) 时不得编造目标。"""
+    a = CodeAnalyzer(
+        "import http.cookiejar\n\n"
+        "class RequestsCookieJar(http.cookiejar.CookieJar):\n"
+        "    def __iter__(self):\n"
+        "        return super().__iter__()\n",
+        module="cookies",
+    )
+    entities, relations = resolve_graph([a])
+    # 父类不在本批文件里: 不得造出本模块内的假方法
+    assert not any(r["rel"] == "CALLS" and r["dst"].startswith("cookies:")
+                   and r["dst"].endswith("__iter__") for r in relations)
+
+
+def test_polymorphic_call_also_links_override():
+    """`adapter.send()` 除基类方法外, 必须连到子类的重写实现。
+
+    真实缺口: requests 的 Session.send 里
+    `adapter = self.get_adapter(url); adapter.send(request, **kwargs)`
+    只连到 BaseAdapter.send (静态类型), 于是 "改 HTTPAdapter.send
+    会影响谁" 返回空 —— 而它恰是最常被改的方法。
+    """
+    a = CodeAnalyzer(
+        "class BaseAdapter:\n    def send(self, r):\n        pass\n"
+        "class HTTPAdapter(BaseAdapter):\n    def send(self, r):\n        pass\n"
+        "class Session:\n"
+        "    def get_adapter(self, url) -> BaseAdapter:\n        return BaseAdapter()\n"
+        "    def send(self):\n"
+        "        adapter = self.get_adapter('u')\n        adapter.send('r')\n",
+        module="m",
+    )
+    entities, relations = resolve_graph([a])
+    edges = calls(relations)
+    # 静态类型的事实保留
+    assert ("m:Session.send", "m:BaseAdapter.send") in edges
+    # 多态分派的事实也要有 —— 否则影响分析漏掉真正的实现
+    assert ("m:Session.send", "m:HTTPAdapter.send") in edges

@@ -28,6 +28,9 @@ REL_TYPES = {"DEFINED_IN", "IMPORTS", "INHERITS", "BELONGS_TO", "CALLS"}
 
 _BUILTIN_NAMES = set(dir(builtins))
 
+# 不携带类型信息的泛标注。当类型用会造出 `typing:Any.foo` 这种假符号。
+_WILDCARD_ANNOTATIONS = {"Any", "object", "Optional", "Union"}
+
 
 def derive_module_name(filepath):
     """从文件路径推导模块名。
@@ -99,6 +102,8 @@ class CodeAnalyzer(ast.NodeVisitor):
         self._import_aliases = {}    # 本地名 -> (来源模块, 原名)
         self._local_var_types = {}   # (函数 uid, 变量名) -> 类型的 uid 或别名
         self._pending_var_calls = [] # 跨模块变量类型调用, 待 resolve_graph 判定
+        self._pending_assigns = []   # 待推断类型的赋值 (调用者 uid, 变量名, 右侧 AST, 类名)
+        self._method_returns = {}    # (类简单名, 方法名) -> 返回标注 AST
         self._seen_rel = set()       # 关系去重
 
         tree = ast.parse(source)
@@ -115,6 +120,8 @@ class CodeAnalyzer(ast.NodeVisitor):
         })
 
         self.visit(tree)                 # 收集定义
+        self._build_class_index()        # 类索引 + 继承表 (推断与解析都要用)
+        self._infer_pending_var_types()  # 变量类型推断 (此时签名表才完整)
         self._resolve_calls()            # 用品名表解析调用
         for entity in self.entities:     # DEFINED_IN
             if entity.get("external") or entity["type"] == "Module":
@@ -221,6 +228,11 @@ class CodeAnalyzer(ast.NodeVisitor):
         # 里大量调用走的是参数而不是局部赋值 —— 只靠 visit_Assign 时
         # 303 个 unresolved 里有相当一部分属于这一类。
         self._register_param_types(uid, node)
+        if parent_is_class and node.returns is not None:
+            # 返回标注供 `conn = self.get_conn()` 这类赋值推断变量类型。
+            # 存 AST 而非 uid: 类表在遍历期才逐步填满, 提前转 uid 会漏
+            # (例如 send 定义在 get_conn 之前时, 类已入表但标注还没读到)。
+            self._method_returns[(self._scope[-1][1], node.name)] = node.returns
 
         self._scope.append(("func", node.name))
         self.generic_visit(node)
@@ -255,6 +267,12 @@ class CodeAnalyzer(ast.NodeVisitor):
             return None
         if isinstance(ann, ast.Name):
             name = ann.id
+            # Any / object / Optional 之外的泛标注不携带类型信息。此前
+            # `resp: Any` 会把变量类型记成 typing:Any, 之后
+            # resp.connection_from_url() 造出 typing:Any.connection_from_url
+            # 这种假符号桩 (实测 requests.adapters 里两处)。
+            if name in _WILDCARD_ANNOTATIONS:
+                return None
             if name in self._local_classes:
                 return self._local_classes[name]
             if name in self._import_aliases:
@@ -343,19 +361,50 @@ class CodeAnalyzer(ast.NodeVisitor):
         """
         caller = self._current_function_uid()
         if caller is not None:
+            # 先按当时可见的信息试一次 (链式赋值/已登记的类型), 推不出就
+            # 记入待推断队列 —— `x = self.get_conn()` 的返回标注可能写在
+            # 文件后部, 遍历到这里时还没登记。
             type_uid = self._infer_type(node.value)
             if type_uid is not None:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         self._local_var_types[(caller, target.id)] = type_uid
+            else:
+                # 类名必须在遍历期捕获: _infer_type 现在不依赖 scope 栈,
+                # 但 self.method() 的返回标注查找需要知道调用点属于哪个类。
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self._pending_assigns.append(
+                            (caller, target.id, node.value, self._current_class()))
         self.generic_visit(node)
 
-    def _infer_type(self, value):
+    def _infer_pending_var_types(self):
+        """遍历结束后再试一次类型推断 (此时签名表才完整)。
+
+        只处理 `self.method()` 这一种新形态: 它的返回标注可能在文件后部
+        才定义。此时 visit 已结束, scope 栈为空, 因此类名直接取自
+        赋值右侧的方法名所属类 —— 用 _current_class() 会在解析期之后失效,
+        改由调用点在登记时带上。
+        """
+        for caller, var, value, owner in self._pending_assigns:
+            type_uid = self._infer_type(value, owner)
+            if type_uid is not None:
+                self._local_var_types[(caller, var)] = type_uid
+        self._pending_assigns = []
+
+    def _infer_type(self, value, owner=None):
         """从赋值右侧推断类型 uid; 推断不出返回 None。
 
-        只认两种可靠形态:
+        认三种可靠形态:
         - `ClassName()`: 本模块类或已导入的类
         - `x`: 已记录类型的另一个局部变量 (链式赋值)
+        - `self.method()`: 该方法有 `-> Type` 返回标注时, 取该类型
+
+        为什么认 `self.method()`: requests 的 adapters.py:696
+        `conn = self.get_connection_with_tls_context(...)` 之后
+        `conn.urlopen()` 是最典型的调用链, 没有它整条链断在赋值处
+        (实测 17 条真漏检里 4 条属于这一类)。只在标注存在时推断:
+        没有标注的方法可能返回任何东西, 猜会连错边。
         """
         if not isinstance(value, ast.Call):
             # 链式赋值 y = x: 沿用已知类型
@@ -388,7 +437,26 @@ class CodeAnalyzer(ast.NodeVisitor):
             if isinstance(func.value, ast.Name) and func.value.id in self._import_aliases:
                 src_module, _ = self._import_aliases[func.value.id]
                 return f"{src_module}:{func.attr}"
+            # self.method(): 取该方法的返回标注。沿继承链向上找 ——
+            # 子类调用父类的构造/工厂方法是常态。
+            if (isinstance(func.value, ast.Name) and func.value.id == "self"
+                    and owner is not None):
+                for cls in self._class_chain(owner):
+                    ann = self._method_returns.get((cls, func.attr))
+                    if ann is not None:
+                        return self._annotation_to_uid(ann)
         return None
+
+    def _class_chain(self, class_name, _depth=0):
+        """类名 -> 自身及所有本模块祖先的简单类名 (防循环继承)。"""
+        if _depth > 10:
+            return []
+        chain = [class_name]
+        for parent in self._bases_by_class.get(class_name, []):
+            for anc in self._class_chain(parent, _depth + 1):
+                if anc not in chain:
+                    chain.append(anc)
+        return chain
 
     # ---------- 调用收集 ----------
     def visit_Call(self, node):
@@ -399,20 +467,45 @@ class CodeAnalyzer(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _resolve_calls(self):
-        self._build_class_index()
+        # 类索引已在 __init__ 末尾建好, 这里不再重复。
         for caller, owner_class, func in self._raw_calls:
-            target = self._resolve_target(func, owner_class, caller)
-            if target is None:
+            targets = self._resolve_targets(func, owner_class, caller)
+            if not targets:
                 name = self._call_display_name(func)
                 if name and name not in _BUILTIN_NAMES:
                     self.unresolved_calls.append({"caller": caller, "name": name})
                 continue
-            # 本地目标直接连边; 跨模块目标留给 resolve_graph 判定
-            # (对方可能在本批文件中定义, 也可能是外部库, 或根本不存在)。
-            if target.startswith(f"{self.module}:"):
-                self._add_relation(caller, "CALLS", target)
-            else:
-                self.add_cross_module_edge(caller, "CALLS", target)
+            for target in targets:
+                # 本地目标直接连边; 跨模块目标留给 resolve_graph 判定
+                # (对方可能在本批文件中定义, 也可能是外部库, 或根本不存在)。
+                if target.startswith(f"{self.module}:"):
+                    self._add_relation(caller, "CALLS", target)
+                else:
+                    self.add_cross_module_edge(caller, "CALLS", target)
+
+    def _resolve_targets(self, func, owner_class=None, caller_ctx=None):
+        """_resolve_target 的多目标版本: 加一条多态分派边。
+
+        只在"静态类型是本模块基类、且本模块有子类重写该方法"时追加
+        子类实现 —— `adapter.send()` 连到 BaseAdapter.send 之外再连
+        HTTPAdapter.send。没有重写时行为与单目标完全一致, 因此既不影响
+        fixture recall, 也不会凭空造边。
+        """
+        target = self._resolve_target(func, owner_class, caller_ctx)
+        if target is None:
+            return []
+        out = [target]
+        # 只对 `变量.方法()` 形态追加: 静态类型才可能声明成基类。
+        if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                and func.value.id != "self"):
+            var_type = self._local_var_types.get((caller_ctx, func.value.id))
+            if (var_type in self._class_by_uid
+                    and var_type.startswith(f"{self.module}:")):
+                cls = self._class_by_uid[var_type]
+                for override in self._overriding_methods(cls, func.attr):
+                    if override not in out:
+                        out.append(override)
+        return out
 
     def _build_class_index(self):
         """建 类 uid -> 简单类名 的反查表, 并汇总继承关系。
@@ -449,6 +542,41 @@ class CodeAnalyzer(ast.NodeVisitor):
                 return found
         return None
 
+    def _overriding_methods(self, class_name, attr, _depth=0):
+        """找出本模块内**重写**了该类该方法的所有子类实现。
+
+        为什么需要: `adapter = self.get_adapter(url)` 的静态类型是
+        BaseAdapter, 于是 adapter.send() 只连到 BaseAdapter.send ——
+        但 HTTPAdapter.send 才是真正被执行的实现。实测 MCP 端到端里
+        "改 HTTPAdapter.send 会影响谁" 返回空上游, 而它恰是 requests
+        里最常被改的方法。静态类型只说明"签名兼容", 多态分派说明"实际执行谁"。
+
+        返回空列表表示没有子类重写 —— 调用方照旧只连基类方法。
+        """
+        if _depth > 10:  # 防循环继承
+            return []
+        found = []
+        # _bases_by_class 是 类名 -> 父类名表; 反查"谁继承 class_name"
+        # 时也要覆盖间接继承, 否则三层继承链会漏掉中间那层。
+        for child in self._bases_by_class:
+            if not self._is_descendant(child, class_name):
+                continue
+            hit = self._local_methods.get((child, attr))
+            if hit:
+                found.append(hit)
+        return found
+
+    def _is_descendant(self, cls, ancestor, _depth=0):
+        """cls 是否（间接）继承自 ancestor。"""
+        if _depth > 10:
+            return False
+        for parent in self._bases_by_class.get(cls, []):
+            if parent == ancestor:
+                return True
+            if self._is_descendant(parent, ancestor, _depth + 1):
+                return True
+        return False
+
     def _resolve_target(self, func, owner_class=None, caller_ctx=None):
         """把调用表达式解析成目标 uid; 无法确定时返回 None。"""
         # getattr(...)() 之类的动态调用: 不猜
@@ -474,6 +602,17 @@ class CodeAnalyzer(ast.NodeVisitor):
             if isinstance(value, ast.Name) and value.id == "self":
                 if owner_class:
                     return self._lookup_method(owner_class, attr)
+                return None
+
+            # super().method() -> 跳过当前类, 从父类开始找。requests 里
+            # 4 个 __init__ 和 CookieJar.set_cookie/__iter__/__contains__
+            # 全是这个形态; 不解析时它们全部留在 unresolved。
+            if (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                    and value.func.id == "super" and owner_class):
+                for parent in self._bases_by_class.get(owner_class, []):
+                    hit = self._lookup_method(parent, attr)
+                    if hit:
+                        return hit
                 return None
 
             # Class.method() -> 本模块内的类方法 (沿继承链找)
