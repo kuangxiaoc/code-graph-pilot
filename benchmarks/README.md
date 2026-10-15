@@ -28,24 +28,34 @@ runner.py               构图 + 打分
 ## 当前基线
 
 ```
-graph: 26 symbols, 67 relations, 0 dangling edges
-macro recall: 0.945   (12 个计分场景, 10 个满分, 1 个已知缺陷不计分)
+graph: 26 symbols, 72 relations, 0 dangling edges
+macro recall: 1.000   (13 个计分场景全部满分, 0 known_gap)
 ```
 
-## 已知缺口 (诚实披露)
+## 曾经的缺口 (已修复, 留档)
 
-两个场景未满分, 根因相同 —— **缺少局部变量类型推断**:
+最初两个场景未满分, 根因是 **缺少局部变量类型推断**:
 
 ```python
 repo = Repository(connect("db://main"))
-repo.save(payload)          # 解析不到 services.db:Repository.save
+repo.save(payload)          # 当时解析不到 services.db:Repository.save
 ```
 
-`obj.method()` 无法确定对象类型时, 当前实现记入 `unresolved_calls`
-而不伪造边 (这是刻意的: 宁缺勿假)。修复方向是解析赋值右侧的构造调用。
-该缺口同时影响场景 11 (0.545) 与场景 12 (0.800)。
+当时的处置是记入 `unresolved_calls` 而不伪造边 (刻意: 宁缺勿假),
+随后补齐了解析 —— 现在 `obj.method()` 支持四种可靠来源:
+构造函数 (`repo = Repository()`)、链式赋值、参数类型标注
+(`def f(r: Response)`)、方法返回值标注 (`conn = self.get_conn()`,
+含沿继承链向上查)。推断不出时**仍然**只记 unresolved, 不猜。
+场景 11 因此从 0.545 到 1.000。
 
-另有场景 13 (`self.audit()` 继承自基类) 标记为 `known_gap`, 不计分。
+另一条 known_gap 是场景 13: `self.audit()` 的 `audit` 继承自
+`BaseService`, 当时不做继承感知的方法解析。已支持沿继承链查找后,
+该场景 recall 1.0, 于 2026-10-15 恢复计分 (同时补上当初漏标的
+调用者 `routes.admin:admin_route`)。恢复计分的依据是**缺陷消失**,
+不是因为改了口径。
+
+剩余残差不在这个 fixture 上, 而在真实仓库的 `super().method()`
+且父类来自外部库 —— 见 README「真实仓库评测」一节。
 
 ## 维护规则
 

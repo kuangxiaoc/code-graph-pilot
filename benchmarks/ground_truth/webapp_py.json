@@ -4,9 +4,13 @@
     "language": "python",
     "derivation": "人工阅读源码得出, 不来自本工具输出。修改 fixture 时必须同步手改本文件。",
     "uid_format": "module:qualname, 例如 auth.tokens:refresh_token",
-    "known_gaps": [
-      "self.audit() 的 audit 继承自 BaseService, 当前实现不做继承感知的方法解析, 该调用记录在 unresolved_calls (场景 13, 标记 known_gap 不计分)。",
-      "无局部变量类型推断: 'repo = Repository(...)' 之后 'repo.save()' 无法解析到 services.db:Repository.save。同样影响 'service = AuthService(...)' 后的 service.login()/service.refresh()。这是场景 11 (0.545) 与场景 12 (0.800) 全部遗漏项的共同根因, 属于硬伤 #4 (obj.method() 只记方法名) 的残留。修复方向: 解析赋值右侧的构造调用, 记录局部名的类型。"
+    "known_gaps": [],
+    "known_gaps_history": [
+      "2026-10-14 记录的两条 known_gap 均已于 2026-10-15 修复并恢复计分:",
+      "1) self.audit() 继承自 BaseService —— 已支持沿继承链的方法解析,",
+      "   场景 13_inheritance_aware_call 恢复计分 (recall 1.0);",
+      "2) 无局部变量类型推断 —— 已支持构造函数/链式赋值/参数标注/返回值标注四种来源,",
+      "   场景 11 从 0.545 到 1.000。两条移出 known_gaps 是因为缺陷消失, 不是因为改了口径。"
     ]
   },
   "01_find_callers": {
@@ -146,8 +150,9 @@
     "kind": "callers",
     "target": "auth.service:BaseService.audit",
     "expected": [
-      "auth.service:AuthService.login"
+      "auth.service:AuthService.login",
+      "routes.admin:admin_route"
     ],
-    "status": "known_gap"
+    "status": "active"
   }
 }

@@ -60,7 +60,7 @@ domain/range 约束被违反**, 可被机器判定。
 
 ```
 fixture: webapp_py
-triples: 244   violations: 0
+triples: 249   violations: 0
 ```
 
 ## 已知边界

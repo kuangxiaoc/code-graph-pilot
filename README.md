@@ -237,7 +237,7 @@ uv run python -m codegraph mcp
 
 | 指标 | 值 | 说明 |
 |---|---|---|
-| fixture macro recall | **1.000** | 12 个计分场景, 全部满分 (2026-10-14 起) |
+| fixture macro recall | **1.000** | 13 个计分场景全部满分, 0 known_gap (2026-10-15 起) |
 | fixture 悬空边 | **0** | 重建前是 64% 的边指向不存在的节点 |
 | fixture 图规模 | 26 符号 / 72 关系 | `benchmarks/fixtures/webapp_py` |
 | 单元测试 | **218 passed** | 全离线: 不调 LLM, 不联网 |
@@ -302,17 +302,20 @@ uv run python benchmarks/repo_eval.py /path/to/repo
 
 ```text
 src/
-  graph_builder.py    # ast 解析器 + resolve_graph 跨文件解析 + Neo4j 写入
+  graph_builder.py    # ast 解析器 + resolve_graph 跨文件解析 + 类型推断 + Neo4j 写入
   graph_store.py      # Cypher 收口 + 进程级驱动复用 + GraphStore 协议
-  codegraph.py        # CLI 入口 (build/symbol/impact/analyze/report/validate)
+  file_cache.py       # 文件 hash 缓存: 增量构建只重解析变更文件 (--cache, 默认关)
+  codegraph.py        # CLI 入口 (build/symbol/impact/hierarchy/analyze/report/validate/mcp)
+  mcp_server.py       # MCP stdio 入口: 只暴露 codegraph_query 一个工具, action 分派
   agent.py            # LangGraph 四节点工作流 + 意图符号抽取
   app.py              # Streamlit UI
   observability/      # 轨迹记录 + 指标计算 + 报告 (trace/report/__main__)
-  ontology/           # RDFS/OWL schema + 约束校验 (schema/export/validate)
+  ontology/           # RDFS/OWL schema + 约束校验 (schema/export/validate/schema.ttl)
 benchmarks/
   fixtures/           # 受控 fixture (auth/tokens/routes/services/utils)
   ground_truth/       # 人工标注的期望结果
-  runner.py           # 场景打分
+  runner.py           # fixture 场景打分 (recall)
+  repo_eval.py        # 真实仓库评测: 解析率与残差分类 (无 ground truth)
 tests/                # 218 个测试, 全离线
 docs/
   specs/              # 各模块 spec + capability-map

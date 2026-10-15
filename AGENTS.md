@@ -6,16 +6,17 @@
 
 ```
 src/
-  graph_builder.py   # ast.NodeVisitor 解析器 + GraphLoader (Neo4j 写入)
+  graph_builder.py   # ast.NodeVisitor 解析器 + resolve_graph + 类型推断 + GraphLoader
   graph_store.py     # Cypher 收口 + 进程级驱动复用 + GraphStore 协议
+  file_cache.py      # 文件 hash 缓存: --cache 只重解析变更文件 (默认关闭)
   agent.py           # LangGraph 状态机: parse -> retrieve -> generate -> review
-  codegraph.py       # CLI 入口: build / symbol / impact / analyze / report / validate
+  codegraph.py       # CLI 入口: build / symbol / impact / hierarchy / analyze / report / validate / mcp
+  mcp_server.py      # MCP stdio 入口, 只暴露 codegraph_query 一个工具 (action 分派)
   app.py             # Streamlit UI (侧边栏入库 / 对话分析 / 图谱可视化)
   observability/     # 轨迹埋点 + 幻觉率指标 + 报告
   ontology/          # RDFS/OWL schema + 约束校验
-test_code.py         # 演示样本: 4 个互相调用的函数, 供手动入库试用
 assets/              # README 截图
-benchmarks/          # 评测: fixture + 人工 ground truth + 真实仓库 runner
+benchmarks/          # 评测: fixture + ground truth + runner.py (recall) + repo_eval.py (真实仓库)
 docs/specs/          # 能力地图与各模块 spec
 docs/decisions/      # ADR
 docs/knowledge/      # 领域调研与评测方法笔记

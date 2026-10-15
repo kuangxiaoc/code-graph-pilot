@@ -17,7 +17,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 | 维度 | 规则 | 检查命令 | 运行时机 |
 |---|---|---|---|
 | 图完整性 | fixture 图悬空边 = 0 | `uv run pytest tests/test_benchmark_runner.py -q` | 每次改动后 |
-| 检索质量 | fixture macro recall = 1.000 (12 场景全满分) | `uv run python -m benchmarks.runner` | 每次改动后 |
+| 检索质量 | fixture macro recall = 1.000 (13 场景全满分, 0 known_gap) | `uv run python -m benchmarks.runner` | 每次改动后 |
 | 单元测试 | 全部通过 | `uv run pytest tests/ -q` | 任务结束 |
 | 本体约束 | fixture 违规数 = 已登记缺口数 | `PYTHONPATH=src uv run python -m ontology validate` | 任务结束 |
 | 指标口径 | 检索失败的 run 不得计入幻觉率均值 | `uv run pytest tests/test_observability_report.py -q` | 每次改动后 |
@@ -35,7 +35,7 @@ Last reviewed: 2026-10-14 by @codex (autonomous run — 见文末说明)
 | 指标 | 当前值 | 方向 |
 |---|---|---|
 | 单元测试数 | 218 (2026-10-15) | 只增不减 |
-| fixture macro recall | 1.000 (12 计分场景, 全满分) | 只增不减 |
+| fixture macro recall | 1.000 (13 计分场景, 全满分) | 只增不减 |
 | fixture 悬空边 | 0 | 保持 0 |
 | 本体违规数 | 0 (249 triples) | 保持 0 |
 

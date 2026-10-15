@@ -88,6 +88,8 @@ pytest, 位置 `tests/test_ontology.py`, 全部**离线**: 用 rdflib 内存图,
 3. **约束能抓到真实违规**: 构造一个刻意引入 label 串号的图 (同名 `:Function` 与 `:Class`
    被误连), 断言 SHACL 报出 domain/range 违规。
 4. fixture 图上的违规数为 0, 或等于 `_meta.known_gaps` 中登记的缺口数。
+   (当前 `_meta.known_gaps` 为空 —— 两条历史缺口已修复并恢复计分, 因此这条
+   等价于要求违规数恒为 0。) 
 5. 提供至少 1 条可运行的 SPARQL 查询, 展示推理能力
    (如 `rdfs:subClassOf*` 求 Method 与 Function 的并集)。
 6. `tests/test_ontology.py` 全绿, 且不依赖 Neo4j 与网络。

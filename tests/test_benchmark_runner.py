@@ -109,5 +109,9 @@ def test_fixture_graph_has_no_dangling_edges():
 def test_fixture_recall_does_not_regress():
     """回归保护: 宏观 recall 不得低于当前基线。"""
     summary = evaluate_fixture("webapp_py")
-    assert summary["scored"] == 12
+    # 13 个场景全部计分: 场景 13 的 known_gap 状态已在 2026-10-15 移除
+    # (继承感知的方法解析已实现)。这里锁住"不得把修好的场景重新关掉" ——
+    # 只断言 recall 阈值的话, 把场景标成 known_gap 一样能让数字变好看。
+    assert summary["scored"] == 13, summary["scored"]
+    assert summary["known_gaps"] == 0, summary["known_gaps"]
     assert summary["macro_recall"] >= 0.94, summary["macro_recall"]
